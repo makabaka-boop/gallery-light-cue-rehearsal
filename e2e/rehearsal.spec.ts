@@ -37,6 +37,7 @@ test('非法清单整份拒绝，且不替换当前有效数据', async ({ page 
   const invalidSheets: Array<[string, unknown, string]> = [
     ['时长越界', [{ id: 'x', label: '坏项', durationMs: 50 }], 'durationMs'],
     ['id 重复', [...cues, { id: 'a', label: '重复', durationMs: 100 }], '重复'],
+    ['数字与文本同一 id', [{ id: 1, label: '数字', durationMs: 100 }, { id: '1', label: '文本', durationMs: 100 }], '重复'],
     ['含额外字段', [{ id: 'x', label: '多字段', durationMs: 100, note: 1 }], '不允许的字段'],
     ['label 为空', [{ id: 'x', label: '  ', durationMs: 100 }], '非空字符串'],
     ['时长非整数', [{ id: 'x', label: '小数', durationMs: 100.5 }], '整数'],

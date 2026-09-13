@@ -38,6 +38,7 @@ describe('parseCueSheet 非法输入整份拒绝', () => {
     ['缺少 id', [{ label: 'x', durationMs: 100 }], 'id'],
     ['id 为空串', [{ id: '  ', label: 'x', durationMs: 100 }], 'id 不能为空'],
     ['id 重复', [...valid, { id: 'a', label: 'y', durationMs: 100 }], '重复'],
+    ['数字与文本形式的同一 id', [{ id: 1, label: 'x', durationMs: 100 }, { id: '1', label: 'y', durationMs: 100 }], '重复'],
     ['缺少 label', [{ id: 'a', durationMs: 100 }], 'label'],
     ['label 为空白', [{ id: 'a', label: '   ', durationMs: 100 }], '非空字符串'],
     ['label 不是字符串', [{ id: 'a', label: 5, durationMs: 100 }], '非空字符串'],

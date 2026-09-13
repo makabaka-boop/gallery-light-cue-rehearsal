@@ -56,11 +56,11 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
   if (idText.trim() === '') {
     throw new CueSheetError(`${where}的 id 不能为空`);
   }
-  const idKey = `${typeof id}:${idText}`;
-  if (seenIds.has(idKey)) {
+  // 唯一性按规范化后的 id 判定：数字 1 与文本 "1" 是同一个 id
+  if (seenIds.has(idText)) {
     throw new CueSheetError(`${where}的 id "${idText}" 与前面的项重复`);
   }
-  seenIds.add(idKey);
+  seenIds.add(idText);
 
   if (typeof label !== 'string' || label.trim() === '') {
     throw new CueSheetError(`${where}的 label 必须是非空字符串`);
