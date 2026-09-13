@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CueSheetError,
+  decodeCueSheet,
   MAX_DURATION_MS,
   MAX_MAX_LATENESS_MS,
   MIN_DURATION_MS,
@@ -118,11 +119,38 @@ describe('parseCueSheet 非法输入整份拒绝', () => {
     expect(() => parseCueSheet(text)).toThrow('第 2 项');
   });
 
-  it('含 U+FFFD 替换字符（非法编码字节解码产物）的清单整份拒绝并提示编码异常', () => {
-    // 非法 UTF-8 字节经解码替换为 � 后 JSON 仍能解析，但乱码不得作为有效标签载入
+  it('标签合法包含替换字符（U+FFFD）时正常载入，不误报编码异常', () => {
+    const items = parseCueSheet('[{"id":"a","label":"追光�灯","durationMs":1000}]');
+    expect(items).toHaveLength(1);
+    expect(items[0].label).toBe('追光�灯');
+  });
+});
+
+describe('decodeCueSheet 严格 UTF-8 解码', () => {
+  const utf8 = (text: string): number[] => Array.from(new TextEncoder().encode(text));
+
+  it('非法字节序列整份拒绝并提示编码异常', () => {
+    // 0xC0 0xAF 为 "/" 的过长编码，属非法 UTF-8；宽松解码会替换为 U+FFFD 后静默通过
+    const bytes = new Uint8Array([
+      ...utf8('[{"id":"bad","label":"追光'),
+      0xc0, 0xaf,
+      ...utf8('","durationMs":1000}]'),
+    ]);
+    expect(() => decodeCueSheet(bytes)).toThrow(CueSheetError);
+    expect(() => decodeCueSheet(bytes)).toThrow('编码异常');
+  });
+
+  it('合法编码的 U+FFFD 字符正常解码，与非法字节区分开', () => {
+    // U+FFFD 的合法 UTF-8 编码为 0xEF 0xBF 0xBD，不是解码失败的产物
     const text = '[{"id":"a","label":"追光�灯","durationMs":1000}]';
-    expect(JSON.parse(text)).toHaveLength(1); // 替换后确实仍能解析
-    expect(() => parseCueSheet(text)).toThrow(CueSheetError);
-    expect(() => parseCueSheet(text)).toThrow('编码异常');
+    const bytes = new TextEncoder().encode(text);
+    expect(Array.from(bytes)).toContain(0xef);
+    expect(decodeCueSheet(bytes)).toBe(text);
+    expect(parseCueSheet(decodeCueSheet(bytes))[0].label).toBe('追光�灯');
+  });
+
+  it('合法 UTF-8 多字节字符（中文、emoji）正常解码', () => {
+    const text = '[{"id":"x","label":"追光·主舞台 💡","durationMs":100}]';
+    expect(decodeCueSheet(new TextEncoder().encode(text))).toBe(text);
   });
 });

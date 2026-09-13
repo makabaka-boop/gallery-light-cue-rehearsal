@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { systemClock } from './engine/clock';
 import { RehearsalEngine } from './engine/engine';
 import type { EngineStatus, Snapshot } from './engine/types';
-import { parseCueSheet } from './engine/validate';
+import { decodeCueSheet, parseCueSheet } from './engine/validate';
 
 const engine = new RehearsalEngine(systemClock);
 
@@ -92,11 +92,12 @@ export default function App() {
     if (!file) {
       return;
     }
-    const text = await file.text();
+    const bytes = new Uint8Array(await file.arrayBuffer());
     runSafely(() => {
-      // 先校验：任一项非法即整份拒绝；再载入：状态不符（如进行中）会抛错。
-      // 两步都在产生任何副作用之前失败，当前有效数据与进行中的演练均不受影响。
-      const items = parseCueSheet(text);
+      // 先严格解码：非法 UTF-8 字节整份拒绝（合法编码的 U+FFFD 字符不受影响）；
+      // 再校验：任一项非法即整份拒绝；再载入：状态不符（如进行中）会抛错。
+      // 各步都在产生任何副作用之前失败，当前有效数据与进行中的演练均不受影响。
+      const items = parseCueSheet(decodeCueSheet(bytes));
       engine.load(items);
       clearTimer();
     });

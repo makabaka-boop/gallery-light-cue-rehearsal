@@ -192,6 +192,24 @@ test('含非法编码字节的清单整份拒绝并提示编码异常', async ({
   await expect(page.getByTestId('status')).toContainText('待启动');
 });
 
+test('标签合法包含替换字符的清单正常载入，不误报编码异常', async ({ page }) => {
+  // 标签中的 U+FFFD 以合法 UTF-8 编码（0xEF 0xBF 0xBD），是原文内容而非解码失败产物
+  const buffer = Buffer.concat([
+    Buffer.from('[{"id":"a","label":"追光', 'utf-8'),
+    Buffer.from([0xef, 0xbf, 0xbd]),
+    Buffer.from('灯","durationMs":1000}]', 'utf-8'),
+  ]);
+  await page.setInputFiles('[data-testid="file-input"]', {
+    name: 'legit-replacement-char.json',
+    mimeType: 'application/json',
+    buffer,
+  });
+  await expect(page.getByRole('alert')).toBeHidden();
+  await expect(page.getByTestId('status')).toContainText('待启动');
+  await expect(page.getByTestId('cue-row-a')).toBeVisible();
+  await expect(page.getByTestId('cue-row-a')).toContainText('追光�灯');
+});
+
 test('暂停时先结算已到期项：保留原截止与真实迟到，并定位下一项', async ({ page }) => {
   const thresholdCues = [
     { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100 },
