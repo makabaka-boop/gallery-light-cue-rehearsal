@@ -306,6 +306,67 @@ describe('暂停与恢复', () => {
     expect(snap.status).toBe('paused');
     expect(snap.currentRemainingMs).toBe(600);
   });
+
+  it('首项已过期但回调未处理时暂停：保留原截止并记录真实迟到，恢复后定位下一项', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100 },
+      { id: 'b', label: '追光', durationMs: 2000 },
+      { id: 'c', label: '谢幕', durationMs: 3000 },
+    ]);
+    engine.start();
+    clock.jumpTo(1300); // a@1000 已过期 300ms，回调尚未投递
+    engine.pause();
+
+    let snap = engine.getSnapshot();
+    // a 被结算：保留原计划截止 1000，按暂停时刻记录真实迟到 300 => 超限
+    expect(snap.rows[0]).toMatchObject({
+      plannedAtMs: 1000,
+      actualAtMs: 1300,
+      latenessMs: 300,
+      latenessVerdict: 'over-limit',
+    });
+    expect(snap.overLimitCount).toBe(1);
+    // 不停留在过期首项：当前项定位到 b，冻结其真实余量 1700
+    expect(snap.status).toBe('paused');
+    expect(snap.currentIndex).toBe(1);
+    expect(snap.currentRemainingMs).toBe(1700);
+
+    // 恢复后以冻结余量重建 b 的截止时刻，b 准时处理
+    expect(engine.resume()).toBe(1700);
+    snap = engine.getSnapshot();
+    expect(snap.rows.map((row) => row.plannedAtMs)).toEqual([1000, 3000, 6000]);
+    clock.advance(1700);
+    expect(engine.handleTimer()).toBe(3000);
+    expect(engine.getSnapshot().rows[1]).toMatchObject({ plannedAtMs: 3000, actualAtMs: 3000 });
+  });
+
+  it('暂停时逐项结算连续到期的多项，再冻结第一个未到期项', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(4500); // a@1000、b@3000 均已到期，c@6000 未到期
+    engine.pause();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ plannedAtMs: 1000, actualAtMs: 4500, latenessMs: 3500 });
+    expect(snap.rows[1]).toMatchObject({ plannedAtMs: 3000, actualAtMs: 4500, latenessMs: 1500 });
+    expect(snap.status).toBe('paused');
+    expect(snap.currentIndex).toBe(2);
+    expect(snap.currentRemainingMs).toBe(1500);
+  });
+
+  it('暂停时全部项均已到期则直接完成', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(100000);
+    engine.pause();
+
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.map((row) => row.actualAtMs)).toEqual([100000, 100000, 100000]);
+    expect(snap.finishedAtMs).toBe(100000);
+    expect(() => engine.resume()).toThrow('无法继续');
+  });
 });
 
 describe('状态不符的重复操作', () => {
@@ -326,7 +387,7 @@ describe('状态不符的重复操作', () => {
     engine.pause();
     expect(() => engine.pause()).toThrow('无法暂停');
     expect(() => engine.start()).toThrow('请使用“继续”');
-    expect(() => engine.load(cues)).toThrow('演练进行中');
+    expect(() => engine.load(cues)).toThrow('演练已暂停');
     expect(engine.getSnapshot().status).toBe('paused');
     expect(engine.getSnapshot().currentRemainingMs).toBe(600);
 

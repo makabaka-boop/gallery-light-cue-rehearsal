@@ -14,7 +14,8 @@ export class RehearsalError extends Error {
  * 计时语义：
  * - 所有截止时刻都由单调时钟的绝对时刻计算（启动时刻 + 时长累加），
  *   不靠递减 tick 累计，因此回调迟到不会让后续截止时刻漂移。
- * - 暂停只冻结当前项的剩余毫秒数；恢复时以该余量建立新的绝对截止时刻。
+ * - 暂停先按各自截止时刻结算所有已到期项（保留原截止、记录真实迟到），
+ *   再冻结第一个尚未到期项的剩余毫秒数；恢复时以该余量建立新的绝对截止时刻。
  * - 定时回调若因标签页降频而延迟并跨过多项，handleTimer 会按各自截止时刻
  *   依次记入轨迹，并把“当前应执行项”直接推进到第一个尚未到期的项。
  * - 一切状态不符的操作就地抛错（RehearsalError），且不改变任何状态。
@@ -37,8 +38,11 @@ export class RehearsalEngine {
 
   /** 载入清单。进行中/已暂停时拒绝；载入成功后进入待启动状态。 */
   load(items: CueItem[]): void {
-    if (this.status === 'running' || this.status === 'paused') {
+    if (this.status === 'running') {
       throw new RehearsalError('演练进行中，无法导入新的提示清单');
+    }
+    if (this.status === 'paused') {
+      throw new RehearsalError('演练已暂停，无法导入新的提示清单');
     }
     if (items.length === 0) {
       throw new RehearsalError('提示清单不能为空');
@@ -72,12 +76,23 @@ export class RehearsalEngine {
     return this.items[0].durationMs;
   }
 
-  /** 暂停：只冻结当前项的剩余毫秒数。 */
+  /**
+   * 暂停：先结算所有已到期但尚未收到回调的项（保留各自原截止时刻，
+   * 以暂停时刻为实际处理时刻记录真实迟到），再冻结第一个尚未到期项的
+   * 剩余毫秒数；若结算后全部到期则直接进入完成状态。
+   */
   pause(): void {
     if (this.status !== 'running') {
       throw new RehearsalError('当前不在进行中，无法暂停');
     }
-    this.remainingMs = Math.max(0, this.deadlineMs - this.clock.now());
+    const now = this.clock.now();
+    this.settleOverdue(now);
+    if (this.index >= this.items.length) {
+      this.status = 'completed';
+      return;
+    }
+    // 结算后当前项截止时刻必在未来，余量恒为正
+    this.remainingMs = this.deadlineMs - now;
     this.status = 'paused';
   }
 
@@ -102,6 +117,19 @@ export class RehearsalEngine {
       throw new RehearsalError('定时回调到达时演练不在进行中');
     }
     const now = this.clock.now();
+    this.settleOverdue(now);
+    if (this.index >= this.items.length) {
+      this.status = 'completed';
+      return null;
+    }
+    return this.deadlineMs - now;
+  }
+
+  /**
+   * 把截止时刻不晚于 now 的项依次记入轨迹（实际处理时刻均为 now，
+   * 计划截止时刻保持各自原值），并把当前项推进到第一个尚未到期的项。
+   */
+  private settleOverdue(now: number): void {
     while (this.index < this.items.length && this.deadlineMs <= now) {
       const item = this.items[this.index];
       const plannedAtMs = this.deadlineMs - this.startedAtMs;
@@ -128,11 +156,6 @@ export class RehearsalEngine {
         this.deadlineMs += this.items[this.index].durationMs;
       }
     }
-    if (this.index >= this.items.length) {
-      this.status = 'completed';
-      return null;
-    }
-    return this.deadlineMs - now;
   }
 
   getSnapshot(): Snapshot {

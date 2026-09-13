@@ -152,6 +152,78 @@ test('进行中的演练不受失败导入影响', async ({ page }) => {
   await expect(page.getByTestId('current')).toContainText('追光');
 });
 
+test('暂停中导入另一份清单被拒绝，提示明确反映暂停状态', async ({ page }) => {
+  await importJson(page, cues);
+  await page.getByRole('button', { name: '开始' }).click();
+  await page.clock.runFor(400);
+  await page.getByRole('button', { name: '暂停' }).click();
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+
+  // 暂停中导入被拒绝：提示必须反映暂停状态，而非笼统的“进行中”
+  await importJson(page, [{ id: 'x', label: '另一份清单', durationMs: 100 }]);
+  await expect(page.getByRole('alert')).toContainText('演练已暂停');
+  // 原清单与暂停状态保持不变
+  await expect(page.getByTestId('cue-row-a')).toBeVisible();
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
+});
+
+test('含非法编码字节的清单整份拒绝并提示编码异常', async ({ page }) => {
+  await importJson(page, cues);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+
+  // 构造含非法 UTF-8 字节（0xC0 0xAF 过长编码）的文件：解码后产生 U+FFFD
+  // 乱码、JSON 仍能解析，但乱码标签不得作为有效数据载入，整份拒绝
+  const buffer = Buffer.concat([
+    Buffer.from('[{"id":"bad","label":"追光', 'utf-8'),
+    Buffer.from([0xc0, 0xaf]),
+    Buffer.from('","durationMs":1000}]', 'utf-8'),
+  ]);
+  await page.setInputFiles('[data-testid="file-input"]', {
+    name: 'bad-encoding.json',
+    mimeType: 'application/json',
+    buffer,
+  });
+  await expect(page.getByRole('alert')).toContainText('编码异常');
+  // 当前有效清单与状态保持不变
+  await expect(page.getByTestId('cue-row-a')).toBeVisible();
+  await expect(page.getByTestId('cue-row-c')).toBeVisible();
+  await expect(page.getByTestId('cue-row-bad')).toHaveCount(0);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+});
+
+test('暂停时先结算已到期项：保留原截止与真实迟到，并定位下一项', async ({ page }) => {
+  const thresholdCues = [
+    { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100 },
+    { id: 'b', label: '追光', durationMs: 2000 },
+    { id: 'c', label: '谢幕', durationMs: 3000 },
+  ];
+  await importJson(page, thresholdCues);
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+
+  // 模拟标签页降频中点击暂停：时钟越过 a 的截止（1000ms）但回调尚未投递
+  await page.clock.pauseAt(new Date('2026-09-13T10:00:01.300Z'));
+  await page.getByRole('button', { name: '暂停' }).click();
+
+  // a 被结算：保留原计划截止 1000，按暂停时刻记录真实迟到 300 => 超限
+  await expect(page.getByTestId('planned-a')).toHaveText('1000 ms');
+  await expect(page.getByTestId('actual-a')).toHaveText('1300 ms');
+  await expect(page.getByTestId('verdict-a')).toHaveText('迟到 300 ms（超限）');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 1 项');
+  // 不停留在过期首项：暂停定位到 b，冻结其真实余量 1700ms
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+  await expect(page.getByTestId('current')).toContainText('追光');
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 1700 ms');
+
+  // 恢复后以冻结余量重建 b 的截止时刻（相对启动 3000ms），b 准时处理
+  await page.getByRole('button', { name: '继续' }).click();
+  await expect(page.getByTestId('planned-b')).toHaveText('3000 ms');
+  await page.clock.runFor(1700);
+  await expect(page.getByTestId('actual-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('current')).toContainText('谢幕');
+});
+
 test('延迟回调一次跨过全部项时集中处理并完成', async ({ page }) => {
   await importJson(page, cues);
   await page.getByRole('button', { name: '开始' }).click();

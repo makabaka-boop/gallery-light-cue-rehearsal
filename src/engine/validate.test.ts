@@ -117,4 +117,12 @@ describe('parseCueSheet 非法输入整份拒绝', () => {
     const text = JSON.stringify([valid[0], { id: 'b', label: '', durationMs: 2000 }]);
     expect(() => parseCueSheet(text)).toThrow('第 2 项');
   });
+
+  it('含 U+FFFD 替换字符（非法编码字节解码产物）的清单整份拒绝并提示编码异常', () => {
+    // 非法 UTF-8 字节经解码替换为 � 后 JSON 仍能解析，但乱码不得作为有效标签载入
+    const text = '[{"id":"a","label":"追光�灯","durationMs":1000}]';
+    expect(JSON.parse(text)).toHaveLength(1); // 替换后确实仍能解析
+    expect(() => parseCueSheet(text)).toThrow(CueSheetError);
+    expect(() => parseCueSheet(text)).toThrow('编码异常');
+  });
 });

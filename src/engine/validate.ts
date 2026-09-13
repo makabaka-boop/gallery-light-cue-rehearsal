@@ -19,6 +19,11 @@ export class CueSheetError extends Error {
  * 任一项非法即整份拒绝（抛出 CueSheetError），调用方不得用其结果替换现有数据。
  */
 export function parseCueSheet(text: string): CueItem[] {
+  // 文件按 UTF-8 解码时，非法字节会被静默替换为 U+FFFD（�）；
+  // 含该字符说明原文件并非合法 UTF-8，乱码不得作为有效内容载入，整份拒绝。
+  if (text.includes('\uFFFD')) {
+    throw new CueSheetError('文件编码异常：包含无法以 UTF-8 解码的字节，请使用 UTF-8 编码后重新导入');
+  }
   let data: unknown;
   try {
     data = JSON.parse(text);
