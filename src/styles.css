@@ -1,0 +1,112 @@
+:root {
+  color-scheme: dark;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #101418;
+  color: #e8ecf1;
+}
+
+.app {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0 0 24px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.import {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: #9fb0c3;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  font-size: 14px;
+  padding: 8px 20px;
+  border-radius: 6px;
+  border: 1px solid #3a4656;
+  background: #1c2530;
+  color: #e8ecf1;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #263242;
+}
+
+.status {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 12px 0;
+}
+
+.status-completed {
+  color: #6fd38c;
+}
+
+.status-running {
+  color: #7db8ff;
+}
+
+.status-paused {
+  color: #f0c36d;
+}
+
+.current {
+  margin: 8px 0;
+  color: #c7d3e2;
+}
+
+.done {
+  margin: 8px 0;
+  color: #6fd38c;
+}
+
+.error {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid #8c3b3b;
+  border-radius: 6px;
+  background: #2a1518;
+  color: #ff9d9d;
+}
+
+table {
+  width: 100%;
+  margin-top: 20px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a3442;
+}
+
+th {
+  color: #9fb0c3;
+  font-weight: 600;
+}

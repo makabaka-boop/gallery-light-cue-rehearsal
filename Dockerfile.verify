@@ -1,0 +1,7 @@
+# 一次性验收服务：在含浏览器的镜像中运行 Vitest 单元测试与 Playwright 端到端测试
+FROM mcr.microsoft.com/playwright:v1.48.2-jammy
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+CMD ["npm", "run", "verify"]

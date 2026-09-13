@@ -1,0 +1,14 @@
+services:
+  # 页面服务：构建静态站点并由 nginx 提供，宿主端口可用 WEB_PORT 覆盖
+  web:
+    build: .
+    image: cue-rehearsal-web
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  # 一次性验收服务：运行 Vitest + Playwright 覆盖计时链路后退出
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    image: cue-rehearsal-verify
