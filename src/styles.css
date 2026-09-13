@@ -134,6 +134,10 @@ th {
   font-weight: 600;
 }
 
+.verdict-skipped {
+  color: #f0c36d;
+}
+
 .channel-unassigned {
   color: #7d8ba0;
 }

@@ -242,6 +242,99 @@ test('暂停时先结算已到期项：保留原截止与真实迟到，并定�
   await expect(page.getByTestId('current')).toContainText('谢幕');
 });
 
+test('演练中人工跳过一项：当前提示推进、轨迹类型与超限汇总符合语义，总计划不变', async ({ page }) => {
+  await importJson(page, cues);
+
+  // 待启动状态点击跳过：就地说明当前状态，快照不变
+  await page.getByRole('button', { name: '跳过当前提示' }).click();
+  await expect(page.getByRole('alert')).toContainText('尚未启动');
+  await expect(page.getByTestId('status')).toContainText('待启动');
+  await expect(page.getByTestId('planned-a')).toHaveText('—');
+
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+  await expect(page.getByTestId('current')).toContainText('开场灯');
+
+  // 进行 400ms 后跳过首项：a 记为人工跳过，当前提示推进到 b，沿原绝对时间线等待
+  await page.clock.runFor(400);
+  await page.getByRole('button', { name: '跳过当前提示' }).click();
+  await expect(page.getByRole('alert')).toBeHidden();
+  await expect(page.getByTestId('current')).toContainText('追光');
+  await expect(page.getByTestId('planned-a')).toHaveText('1000 ms');
+  await expect(page.getByTestId('actual-a')).toHaveText('400 ms');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+  await expect(page.getByTestId('verdict-a')).toHaveAttribute('data-kind', 'skipped');
+  await expect(page.getByTestId('planned-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('planned-c')).toHaveText('6000 ms');
+  // 跳过项不计算迟到量、不参与超限汇总
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+
+  // b 仍在原计划截止 3000ms 到期（跳过没有顺延后续项）
+  await page.clock.runFor(2600);
+  await expect(page.getByTestId('actual-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('verdict-b')).toHaveText('迟到 0 ms（未设标准）');
+  await expect(page.getByTestId('verdict-b')).toHaveAttribute('data-kind', 'settled');
+  await expect(page.getByTestId('current')).toContainText('谢幕');
+
+  // c 到期后完成：最终计划截止与总时长均保持原值
+  await page.clock.runFor(3000);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
+  await expect(page.getByTestId('done')).toContainText('计划截止 6000 ms');
+  await expect(page.getByTestId('done')).toContainText('实际处理 6000 ms');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+
+  // 完成后点击跳过：就地说明当前状态，快照不变
+  await page.getByRole('button', { name: '跳过当前提示' }).click();
+  await expect(page.getByRole('alert')).toContainText('已完成');
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+});
+
+test('跳过末项直接完成，计划截止保持原值', async ({ page }) => {
+  await importJson(page, cues);
+  await page.getByRole('button', { name: '开始' }).click();
+
+  // 前两项按截止到期处理后，在 c 截止前跳过末项
+  await page.clock.runFor(1000);
+  await expect(page.getByTestId('actual-a')).toHaveText('1000 ms');
+  await page.clock.runFor(2000);
+  await expect(page.getByTestId('actual-b')).toHaveText('3000 ms');
+  await page.clock.runFor(1500); // 4500ms，c@6000 尚未到期
+  await page.getByRole('button', { name: '跳过当前提示' }).click();
+
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('verdict-c')).toHaveText('人工跳过');
+  await expect(page.getByTestId('verdict-c')).toHaveAttribute('data-kind', 'skipped');
+  await expect(page.getByTestId('planned-c')).toHaveText('6000 ms');
+  await expect(page.getByTestId('actual-c')).toHaveText('4500 ms');
+  await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
+  await expect(page.getByTestId('done')).toContainText('计划截止 6000 ms');
+  await expect(page.getByTestId('done')).toContainText('实际处理 4500 ms');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+});
+
+test('暂停中点击跳过就地说明状态且快照不变', async ({ page }) => {
+  await importJson(page, cues);
+  await page.getByRole('button', { name: '开始' }).click();
+  await page.clock.runFor(400);
+  await page.getByRole('button', { name: '暂停' }).click();
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+
+  await page.getByRole('button', { name: '跳过当前提示' }).click();
+  await expect(page.getByRole('alert')).toContainText('暂停');
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
+  await expect(page.getByTestId('actual-a')).toHaveText('—');
+
+  // 暂停恢复链路不受影响：暂停期间时间流逝不改变冻结余量，继续后按余量重建截止
+  await page.clock.runFor(10000);
+  await page.getByRole('button', { name: '继续' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+  await expect(page.getByTestId('planned-a')).toHaveText('11000 ms');
+});
+
 test('延迟回调一次跨过全部项时集中处理并完成', async ({ page }) => {
   await importJson(page, cues);
   await page.getByRole('button', { name: '开始' }).click();

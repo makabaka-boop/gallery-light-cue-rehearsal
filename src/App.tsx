@@ -19,11 +19,16 @@ function formatMs(value: number | null): string {
 }
 
 function verdictCell(row: {
+  kind: 'settled' | 'skipped' | null;
   maxLatenessMs: number | null;
   actualAtMs: number | null;
   latenessMs: number | null;
   latenessVerdict: 'on-time' | 'over-limit' | null;
 }): { text: string; className: string } {
+  if (row.kind === 'skipped') {
+    // 人工跳过：保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总
+    return { text: '人工跳过', className: 'verdict-skipped' };
+  }
   if (row.actualAtMs === null || row.latenessMs === null) {
     // 尚未处理：未配置阈值的旧格式项始终显示“未设标准”
     return { text: row.maxLatenessMs === null ? '未设标准' : '待判定', className: 'verdict-pending' };
@@ -133,6 +138,15 @@ export default function App() {
       clearTimer();
     });
   const handleResume = () => runSafely(() => schedule(engine.resume()));
+  const handleSkip = () =>
+    runSafely(() => {
+      const nextDelay = engine.skip();
+      if (nextDelay !== null) {
+        schedule(nextDelay);
+      } else {
+        clearTimer();
+      }
+    });
 
   useEffect(() => clearTimer, []);
 
@@ -165,6 +179,9 @@ export default function App() {
           </button>
           <button type="button" onClick={handleResume}>
             继续
+          </button>
+          <button type="button" onClick={handleSkip}>
+            跳过当前提示
           </button>
         </div>
       </section>
@@ -251,6 +268,7 @@ export default function App() {
                   <td
                     className={verdict.className}
                     data-testid={`verdict-${row.id}`}
+                    data-kind={row.kind ?? 'none'}
                     data-verdict={row.latenessVerdict ?? 'none'}
                   >
                     {verdict.text}

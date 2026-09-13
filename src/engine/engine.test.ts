@@ -529,6 +529,183 @@ describe('通道占用检查（channelStart/channelCount）', () => {
   });
 });
 
+describe('人工跳过', () => {
+  it('中途跳过：记为人工跳过、保留原计划截止与操作时刻，后续沿原绝对时间线推进', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.advance(400);
+    // a 尚未到期（截止 1000），跳过后沿原时间线等待 b@3000
+    expect(engine.skip()).toBe(2600);
+
+    let snap = engine.getSnapshot();
+    expect(snap.status).toBe('running');
+    expect(snap.currentIndex).toBe(1);
+    expect(snap.rows[0]).toMatchObject({
+      kind: 'skipped',
+      plannedAtMs: 1000,
+      actualAtMs: 400,
+      latenessMs: null,
+      latenessVerdict: null,
+    });
+    // 后续项截止时刻不变，总计划不延长
+    expect(snap.rows.map((row) => row.plannedAtMs)).toEqual([1000, 3000, 6000]);
+
+    clock.advance(2600);
+    expect(engine.handleTimer()).toBe(3000);
+    snap = engine.getSnapshot();
+    expect(snap.rows[1]).toMatchObject({ kind: 'settled', plannedAtMs: 3000, actualAtMs: 3000 });
+    expect(snap.overLimitCount).toBe(0);
+  });
+
+  it('跳过时先结算已到期项：到期边界项记为到期处理，首个未到期项记为人工跳过', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100 },
+      { id: 'b', label: '追光', durationMs: 2000 },
+      { id: 'c', label: '谢幕', durationMs: 3000 },
+    ]);
+    engine.start();
+    clock.jumpTo(1300); // a@1000 已到期但回调未投递，b@3000 未到期
+    // b 被跳过后沿原绝对时间线等待 c@6000：6000 - 1300 = 4700
+    expect(engine.skip()).toBe(4700);
+
+    const snap = engine.getSnapshot();
+    // a 按截止边界先结算：保留原截止、按跳过时刻记录真实迟到并照常判定
+    expect(snap.rows[0]).toMatchObject({
+      kind: 'settled',
+      plannedAtMs: 1000,
+      actualAtMs: 1300,
+      latenessMs: 300,
+      latenessVerdict: 'over-limit',
+    });
+    // b 才是被跳过项：不计算迟到量、不参与超限汇总
+    expect(snap.rows[1]).toMatchObject({
+      kind: 'skipped',
+      plannedAtMs: 3000,
+      actualAtMs: 1300,
+      latenessMs: null,
+      latenessVerdict: null,
+    });
+    expect(snap.overLimitCount).toBe(1); // 仅 a 超限
+    expect(snap.currentIndex).toBe(2);
+    expect(snap.rows[2].plannedAtMs).toBe(6000);
+  });
+
+  it('截止恰等于跳过时刻的项按到期处理而非跳过', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(1000); // a 恰好在截止时刻
+    // a 按到期处理，b 被跳过，随后等待 c@6000：6000 - 1000 = 5000
+    expect(engine.skip()).toBe(5000);
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ kind: 'settled', plannedAtMs: 1000, actualAtMs: 1000 });
+    expect(snap.rows[1]).toMatchObject({ kind: 'skipped', plannedAtMs: 3000, actualAtMs: 1000 });
+    expect(snap.currentIndex).toBe(2);
+  });
+
+  it('跳过末项直接完成，计划总时长与最终截止不变', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(3000);
+    expect(engine.handleTimer()).toBe(3000); // a、b 到期处理
+    clock.advance(1500); // 4500，c@6000 未到期
+    expect(engine.skip()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows[2]).toMatchObject({
+      kind: 'skipped',
+      plannedAtMs: 6000,
+      actualAtMs: 4500,
+      latenessMs: null,
+    });
+    expect(snap.totalDurationMs).toBe(6000);
+    expect(snap.finishedAtMs).toBe(4500);
+    expect(snap.overLimitCount).toBe(0);
+  });
+
+  it('跳过时全部项均已到期则只结算不跳过，直接完成', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(100000);
+    expect(engine.skip()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.every((row) => row.kind === 'settled')).toBe(true);
+    expect(snap.rows.map((row) => row.actualAtMs)).toEqual([100000, 100000, 100000]);
+    expect(snap.finishedAtMs).toBe(100000);
+  });
+
+  it('跳过项不参与超限汇总，其余项判定照常', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 500 },
+      { id: 'b', label: '追光', durationMs: 2000, maxLatenessMs: 0 },
+    ]);
+    engine.start();
+    clock.advance(200); // a 未到期即跳过：虽有阈值也不判级
+    engine.skip();
+    clock.jumpTo(3200); // b@3000 到期，回调迟到 200 > 0 => 超限
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ kind: 'skipped', latenessVerdict: null });
+    expect(snap.rows[1]).toMatchObject({
+      kind: 'settled',
+      latenessMs: 200,
+      latenessVerdict: 'over-limit',
+    });
+    expect(snap.overLimitCount).toBe(1);
+  });
+
+  it('待启动、暂停或完成状态下跳过就地报错且快照不变', () => {
+    const { clock, engine } = loaded();
+    const before = engine.getSnapshot();
+    expect(() => engine.skip()).toThrow('演练尚未启动');
+    expect(engine.getSnapshot()).toEqual(before);
+
+    engine.start();
+    clock.advance(400);
+    engine.pause();
+    const pausedSnap = engine.getSnapshot();
+    expect(() => engine.skip()).toThrow('暂停状态');
+    expect(engine.getSnapshot()).toEqual(pausedSnap);
+
+    engine.resume();
+    clock.jumpTo(200000);
+    engine.handleTimer();
+    expect(engine.getSnapshot().status).toBe('completed');
+    const doneSnap = engine.getSnapshot();
+    expect(() => engine.skip()).toThrow('已完成');
+    expect(engine.getSnapshot()).toEqual(doneSnap);
+  });
+
+  it('未导入清单时跳过就地报错', () => {
+    const { engine } = setup();
+    expect(() => engine.skip()).toThrow('尚未导入提示清单');
+    expect(engine.getSnapshot().status).toBe('idle');
+  });
+
+  it('未使用跳过的旧清单保持原计时、暂停恢复和完成表现', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.advance(400);
+    engine.pause();
+    clock.advance(10000);
+    expect(engine.resume()).toBe(600);
+    clock.jumpTo(200000);
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.every((row) => row.kind === 'settled')).toBe(true);
+    expect(snap.rows.map((row) => row.plannedAtMs)).toEqual([11000, 13000, 16000]);
+    expect(snap.finishedAtMs).toBe(200000);
+  });
+});
+
 describe('状态不符的重复操作', () => {
   it('各类非法操作均就地报错且不改变状态', () => {
     const { clock, engine } = loaded();

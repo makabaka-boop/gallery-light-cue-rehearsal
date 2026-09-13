@@ -4,6 +4,7 @@ import type {
   ChannelCheck,
   CueItem,
   CueLogEntry,
+  CueLogKind,
   CueRow,
   EngineStatus,
   LatenessVerdict,
@@ -27,6 +28,9 @@ export class RehearsalError extends Error {
  *   再冻结第一个尚未到期项的剩余毫秒数；恢复时以该余量建立新的绝对截止时刻。
  * - 定时回调若因标签页降频而延迟并跨过多项，handleTimer 会按各自截止时刻
  *   依次记入轨迹，并把“当前应执行项”直接推进到第一个尚未到期的项。
+ * - 人工跳过先按当前单调时刻结算所有已到期项（记为“到期处理”），再把首个
+ *   尚未到期项记为“人工跳过”，随后沿原绝对时间线等待下一项：不重排清单、
+ *   不延长总计划；跳过项保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总。
  * - 一切状态不符的操作就地抛错（RehearsalError），且不改变任何状态。
  */
 export class RehearsalEngine {
@@ -138,6 +142,52 @@ export class RehearsalEngine {
   }
 
   /**
+   * 人工跳过当前提示。先按当前单调时刻结算所有已到期但尚未收到回调的项
+   * （与定时回调相同的“到期处理”），再把首个尚未到期项记为“人工跳过”：
+   * 保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总。
+   * 随后沿原绝对时间线等待下一项（不重排清单、不延长总计划），
+   * 返回距下一项截止的毫秒数；跳过的是末项（或结算后全部到期）则完成并返回 null。
+   */
+  skip(): number | null {
+    if (this.status === 'idle') {
+      throw new RehearsalError('尚未导入提示清单，无法跳过当前提示');
+    }
+    if (this.status === 'ready') {
+      throw new RehearsalError('演练尚未启动，无法跳过当前提示');
+    }
+    if (this.status === 'paused') {
+      throw new RehearsalError('演练处于暂停状态，无法跳过当前提示');
+    }
+    if (this.status === 'completed') {
+      throw new RehearsalError('演练已完成，无法跳过当前提示');
+    }
+    const now = this.clock.now();
+    this.settleOverdue(now);
+    if (this.index >= this.items.length) {
+      this.status = 'completed';
+      return null;
+    }
+    const item = this.items[this.index];
+    this.log.push({
+      id: item.id,
+      label: item.label,
+      kind: 'skipped',
+      plannedAtMs: this.deadlineMs - this.startedAtMs,
+      actualAtMs: now - this.startedAtMs,
+      maxLatenessMs: item.maxLatenessMs ?? null,
+      latenessMs: null,
+      latenessVerdict: null,
+    });
+    this.index += 1;
+    if (this.index >= this.items.length) {
+      this.status = 'completed';
+      return null;
+    }
+    this.deadlineMs += this.items[this.index].durationMs;
+    return this.deadlineMs - now;
+  }
+
+  /**
    * 把截止时刻不晚于 now 的项依次记入轨迹（实际处理时刻均为 now，
    * 计划截止时刻保持各自原值），并把当前项推进到第一个尚未到期的项。
    */
@@ -157,6 +207,7 @@ export class RehearsalEngine {
       this.log.push({
         id: item.id,
         label: item.label,
+        kind: 'settled',
         plannedAtMs,
         actualAtMs,
         maxLatenessMs: threshold,
@@ -179,12 +230,14 @@ export class RehearsalEngine {
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
       const maxLatenessMs = item.maxLatenessMs ?? null;
+      let kind: CueLogKind | null = null;
       let plannedAtMs: number | null = null;
       let actualAtMs: number | null = null;
       let latenessMs: number | null = null;
       let latenessVerdict: LatenessVerdict | null = null;
       if (i < this.index) {
         const entry = this.log[i];
+        kind = entry.kind;
         plannedAtMs = entry.plannedAtMs;
         actualAtMs = entry.actualAtMs;
         latenessMs = entry.latenessMs;
@@ -203,6 +256,7 @@ export class RehearsalEngine {
         channelStart: item.channelStart ?? null,
         channelCount: item.channelCount ?? null,
         channelCheck: this.channelChecks[i],
+        kind,
         plannedAtMs,
         actualAtMs,
         latenessMs,

@@ -33,19 +33,24 @@ export interface ChannelCheck {
 /** 迟到判定：准时（迟到量不超过该项阈值）或超限（超过阈值） */
 export type LatenessVerdict = 'on-time' | 'over-limit';
 
+/** 轨迹记录类型：到期处理（按截止时刻结算）或人工跳过（技术员主动跳过当前提示） */
+export type CueLogKind = 'settled' | 'skipped';
+
 /** 已处理提示的轨迹记录，时刻均为相对演练启动的毫秒偏移 */
 export interface CueLogEntry {
   id: string;
   label: string;
+  /** 到期处理 / 人工跳过 */
+  kind: CueLogKind;
   /** 计划截止时刻（相对启动） */
   plannedAtMs: number;
-  /** 实际处理时刻（相对启动） */
+  /** 实际处理时刻（相对启动）；人工跳过项为点击跳过的操作时刻 */
   actualAtMs: number;
   /** 该项配置的迟到阈值；未配置为 null */
   maxLatenessMs: number | null;
-  /** 迟到量 = 实际处理时刻 - 计划截止时刻 */
-  latenessMs: number;
-  /** 准时 / 超限；未配置阈值时为 null（只记录时间，不判级） */
+  /** 迟到量 = 实际处理时刻 - 计划截止时刻；人工跳过项不计算迟到量，为 null */
+  latenessMs: number | null;
+  /** 准时 / 超限；未配置阈值或人工跳过时为 null（不参与超限汇总） */
   latenessVerdict: LatenessVerdict | null;
 }
 
@@ -63,11 +68,13 @@ export interface CueRow {
   channelCount: number | null;
   /** 通道占用检查结果（载入时按闭区间比较得出，演练期间不变） */
   channelCheck: ChannelCheck;
+  /** 轨迹类型（到期处理 / 人工跳过）；未处理为 null */
+  kind: CueLogKind | null;
   /** 计划截止时刻；未启动或暂停期间待定（null） */
   plannedAtMs: number | null;
   /** 实际处理时刻；未处理为 null */
   actualAtMs: number | null;
-  /** 迟到量；未处理为 null */
+  /** 迟到量；未处理或人工跳过为 null */
   latenessMs: number | null;
   /** 准时 / 超限；未处理或未配置阈值为 null */
   latenessVerdict: LatenessVerdict | null;
