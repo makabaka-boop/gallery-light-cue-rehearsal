@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { systemClock } from './engine/clock';
 import { RehearsalEngine } from './engine/engine';
-import type { EngineStatus, Snapshot } from './engine/types';
+import type { CueRow, EngineStatus, Snapshot } from './engine/types';
 import { decodeCueSheet, parseCueSheet } from './engine/validate';
 
 const engine = new RehearsalEngine(systemClock);
@@ -36,6 +36,29 @@ function verdictCell(row: {
     return { text: `迟到 ${row.latenessMs} ms（超限）`, className: 'verdict-over' };
   }
   return { text: `迟到 ${row.latenessMs} ms（准时）`, className: 'verdict-ontime' };
+}
+
+/** 通道占用区间文本：起始–结束（闭区间）；未配接的旧项显示“未配接” */
+function channelRangeText(row: CueRow): string {
+  if (row.channelStart === null || row.channelCount === null) {
+    return '未配接';
+  }
+  return `${row.channelStart}–${row.channelStart + row.channelCount - 1}`;
+}
+
+/** 通道检查结论文本：冲突时列出对方标签与重叠范围（双向中的本侧视角） */
+function channelCheckCell(row: CueRow): { text: string; className: string } {
+  const check = row.channelCheck;
+  if (check.status === 'unassigned') {
+    return { text: '未配接', className: 'channel-unassigned' };
+  }
+  if (check.status === 'available') {
+    return { text: '可用', className: 'channel-available' };
+  }
+  const detail = check.conflicts
+    .map((c) => `与「${c.label}」重叠 ${c.overlapStart}–${c.overlapEnd}`)
+    .join('；');
+  return { text: `冲突：${detail}`, className: 'channel-conflict' };
 }
 
 export default function App() {
@@ -181,6 +204,12 @@ export default function App() {
       )}
 
       {rows.length > 0 && (
+        <p className="summary" data-testid="channel-summary">
+          通道检查汇总：冲突 {snapshot.channelConflictCount} 项
+        </p>
+      )}
+
+      {rows.length > 0 && (
         <table>
           <thead>
             <tr>
@@ -189,6 +218,8 @@ export default function App() {
               <th scope="col">提示</th>
               <th scope="col">时长</th>
               <th scope="col">迟到上限</th>
+              <th scope="col">通道</th>
+              <th scope="col">通道检查</th>
               <th scope="col">计划截止</th>
               <th scope="col">实际处理</th>
               <th scope="col">迟到判定</th>
@@ -197,6 +228,7 @@ export default function App() {
           <tbody>
             {rows.map((row, i) => {
               const verdict = verdictCell(row);
+              const channel = channelCheckCell(row);
               return (
                 <tr key={row.id} data-testid={`cue-row-${row.id}`}>
                   <td>{i + 1}</td>
@@ -205,6 +237,14 @@ export default function App() {
                   <td>{row.durationMs} ms</td>
                   <td data-testid={`threshold-${row.id}`}>
                     {row.maxLatenessMs === null ? '未设标准' : `${row.maxLatenessMs} ms`}
+                  </td>
+                  <td data-testid={`channels-${row.id}`}>{channelRangeText(row)}</td>
+                  <td
+                    className={channel.className}
+                    data-testid={`channel-check-${row.id}`}
+                    data-channel-status={row.channelCheck.status}
+                  >
+                    {channel.text}
                   </td>
                   <td data-testid={`planned-${row.id}`}>{formatMs(row.plannedAtMs)}</td>
                   <td data-testid={`actual-${row.id}`}>{formatMs(row.actualAtMs)}</td>

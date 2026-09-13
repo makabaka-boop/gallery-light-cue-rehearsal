@@ -1,0 +1,6 @@
+[
+  { "id": "open", "label": "开场主灯渐亮", "durationMs": 3000, "channelStart": 1, "channelCount": 16 },
+  { "id": "spot", "label": "追光扫过中央展台", "durationMs": 5000, "maxLatenessMs": 500, "channelStart": 17, "channelCount": 8 },
+  { "id": "wash", "label": "侧墙洗墙灯换色", "durationMs": 4000, "channelStart": 24, "channelCount": 8 },
+  { "id": "finale", "label": "谢幕全场亮灯", "durationMs": 6000 }
+]

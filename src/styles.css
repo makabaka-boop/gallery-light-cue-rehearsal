@@ -133,3 +133,16 @@ th {
   color: #ff7d7d;
   font-weight: 600;
 }
+
+.channel-unassigned {
+  color: #7d8ba0;
+}
+
+.channel-available {
+  color: #6fd38c;
+}
+
+.channel-conflict {
+  color: #ff7d7d;
+  font-weight: 600;
+}

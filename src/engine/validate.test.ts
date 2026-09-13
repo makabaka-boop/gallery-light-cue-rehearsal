@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   CueSheetError,
   decodeCueSheet,
+  MAX_CHANNEL,
   MAX_DURATION_MS,
   MAX_MAX_LATENESS_MS,
+  MIN_CHANNEL,
   MIN_DURATION_MS,
   MIN_MAX_LATENESS_MS,
   parseCueSheet,
@@ -85,6 +87,85 @@ describe('parseCueSheet maxLatenessMs 可选字段', () => {
     ];
     expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('第 2 项');
     expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('maxLatenessMs');
+  });
+});
+
+describe('parseCueSheet channelStart/channelCount 通道配接', () => {
+  it('两字段同时省略时不设置（旧清单保持原样）', () => {
+    const items = parseCueSheet(JSON.stringify(valid));
+    expect(items.every((item) => item.channelStart === undefined)).toBe(true);
+    expect(items.every((item) => item.channelCount === undefined)).toBe(true);
+  });
+
+  it('接受边界值：起始 1 与 512、数量 1 与 512、结束通道恰为 512', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'lo', label: '首通道', durationMs: 100, channelStart: MIN_CHANNEL, channelCount: 1 },
+        { id: 'hi', label: '末通道', durationMs: 100, channelStart: MAX_CHANNEL, channelCount: 1 },
+        { id: 'full', label: '满配', durationMs: 100, channelStart: 1, channelCount: MAX_CHANNEL },
+        { id: 'edge', label: '贴边', durationMs: 100, channelStart: 500, channelCount: 13 },
+      ]),
+    );
+    expect(items.map((item) => [item.channelStart, item.channelCount])).toEqual([
+      [1, 1],
+      [512, 1],
+      [1, 512],
+      [500, 13],
+    ]);
+  });
+
+  it('与 maxLatenessMs 及未配接旧项可在同一清单内混用', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'old', label: '旧项', durationMs: 100 },
+        { id: 'late', label: '阈值项', durationMs: 100, maxLatenessMs: 500 },
+        { id: 'dmx', label: '配接项', durationMs: 100, channelStart: 10, channelCount: 4 },
+      ]),
+    );
+    expect(items[0].channelStart).toBeUndefined();
+    expect(items[1].channelStart).toBeUndefined();
+    expect(items[2]).toMatchObject({ channelStart: 10, channelCount: 4 });
+  });
+
+  const invalidCases: Array<[string, unknown, string]> = [
+    ['只出现 channelStart', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1 }], '必须同时出现'],
+    ['只出现 channelCount', [{ id: 'a', label: 'x', durationMs: 100, channelCount: 1 }], '必须同时出现'],
+    ['channelStart 为小数', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1.5, channelCount: 2 }], 'channelStart 必须是整数'],
+    ['channelStart 为字符串', [{ id: 'a', label: 'x', durationMs: 100, channelStart: '1', channelCount: 2 }], 'channelStart 必须是整数'],
+    ['channelStart 为布尔', [{ id: 'a', label: 'x', durationMs: 100, channelStart: true, channelCount: 2 }], 'channelStart 必须是整数'],
+    ['channelStart 为 null', [{ id: 'a', label: 'x', durationMs: 100, channelStart: null, channelCount: 2 }], 'channelStart 必须是整数'],
+    ['channelCount 为小数', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1, channelCount: 2.5 }], 'channelCount 必须是整数'],
+    ['channelCount 为字符串', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1, channelCount: '2' }], 'channelCount 必须是整数'],
+    ['channelCount 为 null', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1, channelCount: null }], 'channelCount 必须是整数'],
+    ['channelStart 为 0', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 0, channelCount: 1 }], 'channelStart 必须在 1 到 512'],
+    ['channelStart 大于 512', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 513, channelCount: 1 }], 'channelStart 必须在 1 到 512'],
+    ['channelStart 为负数', [{ id: 'a', label: 'x', durationMs: 100, channelStart: -4, channelCount: 1 }], 'channelStart 必须在 1 到 512'],
+    ['channelCount 为 0', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1, channelCount: 0 }], 'channelCount 必须在 1 到 512'],
+    ['channelCount 大于 512', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 1, channelCount: 513 }], 'channelCount 必须在 1 到 512'],
+    ['结束通道超过 512（512 + 2 - 1）', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 512, channelCount: 2 }], '结束通道'],
+    ['结束通道超过 512（500 + 14 - 1）', [{ id: 'a', label: 'x', durationMs: 100, channelStart: 500, channelCount: 14 }], '结束通道'],
+  ];
+
+  it.each(invalidCases)('%s', (_name, payload, message) => {
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(CueSheetError);
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(message);
+  });
+
+  it('非法通道配接指出具体条目序号与字段', () => {
+    const payload = [
+      valid[0],
+      { id: 'b', label: 'y', durationMs: 200, channelStart: 510, channelCount: 10 },
+    ];
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('第 2 项');
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('channelStart');
+  });
+
+  it('任一项通道配接非法即整份拒绝，不返回部分结果', () => {
+    const payload = [
+      { id: 'ok', label: '好项', durationMs: 100, channelStart: 1, channelCount: 8 },
+      { id: 'bad', label: '坏项', durationMs: 100, channelStart: 600, channelCount: 1 },
+    ];
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(CueSheetError);
   });
 });
 

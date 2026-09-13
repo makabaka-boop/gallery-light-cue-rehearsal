@@ -4,8 +4,17 @@ export const MIN_DURATION_MS = 100;
 export const MAX_DURATION_MS = 600000;
 export const MIN_MAX_LATENESS_MS = 0;
 export const MAX_MAX_LATENESS_MS = 600000;
+export const MIN_CHANNEL = 1;
+export const MAX_CHANNEL = 512;
 
-const ALLOWED_KEYS = new Set(['id', 'label', 'durationMs', 'maxLatenessMs']);
+const ALLOWED_KEYS = new Set([
+  'id',
+  'label',
+  'durationMs',
+  'maxLatenessMs',
+  'channelStart',
+  'channelCount',
+]);
 
 export class CueSheetError extends Error {
   constructor(message: string) {
@@ -57,11 +66,11 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
   for (const key of Object.keys(record)) {
     if (!ALLOWED_KEYS.has(key)) {
       throw new CueSheetError(
-        `${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs、maxLatenessMs`,
+        `${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs、maxLatenessMs、channelStart、channelCount`,
       );
     }
   }
-  const { id, label, durationMs, maxLatenessMs } = record;
+  const { id, label, durationMs, maxLatenessMs, channelStart, channelCount } = record;
 
   if (typeof id !== 'string' && typeof id !== 'number') {
     throw new CueSheetError(`${where}的 id 必须是字符串或数字`);
@@ -106,6 +115,39 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
     }
     item.maxLatenessMs = maxLatenessMs;
   }
+
+  // channelStart 与 channelCount 为成对的可选字段：只能同时出现或同时省略；
+  // 出现时都必须是整数，起始 1 ～ 512、数量 1 ～ 512，且结束通道
+  // （起始 + 数量 - 1）不得超过 512。任一条件不符即整份拒绝。
+  if (channelStart === undefined && channelCount === undefined) {
+    return item;
+  }
+  if (channelStart === undefined || channelCount === undefined) {
+    throw new CueSheetError(`${where}的 channelStart 与 channelCount 必须同时出现`);
+  }
+  if (typeof channelStart !== 'number' || !Number.isInteger(channelStart)) {
+    throw new CueSheetError(`${where}的 channelStart 必须是整数`);
+  }
+  if (typeof channelCount !== 'number' || !Number.isInteger(channelCount)) {
+    throw new CueSheetError(`${where}的 channelCount 必须是整数`);
+  }
+  if (channelStart < MIN_CHANNEL || channelStart > MAX_CHANNEL) {
+    throw new CueSheetError(
+      `${where}的 channelStart 必须在 ${MIN_CHANNEL} 到 ${MAX_CHANNEL} 之间`,
+    );
+  }
+  if (channelCount < MIN_CHANNEL || channelCount > MAX_CHANNEL) {
+    throw new CueSheetError(
+      `${where}的 channelCount 必须在 ${MIN_CHANNEL} 到 ${MAX_CHANNEL} 之间`,
+    );
+  }
+  if (channelStart + channelCount - 1 > MAX_CHANNEL) {
+    throw new CueSheetError(
+      `${where}的结束通道（channelStart + channelCount - 1 = ${channelStart + channelCount - 1}）不能超过 ${MAX_CHANNEL}`,
+    );
+  }
+  item.channelStart = channelStart;
+  item.channelCount = channelCount;
 
   return item;
 }

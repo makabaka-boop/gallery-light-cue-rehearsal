@@ -4,6 +4,30 @@ export interface CueItem {
   durationMs: number;
   /** 可选的最大可接受迟到毫秒数（0 ～ 600000 的整数）；省略则只记录迟到量，不做准时/超限判定 */
   maxLatenessMs?: number;
+  /** 可选的灯具起始通道（1 ～ 512 的整数）；必须与 channelCount 同时出现 */
+  channelStart?: number;
+  /** 可选的占用通道数（1 ～ 512 的整数，且起始 + 数量 - 1 不得超过 512）；必须与 channelStart 同时出现 */
+  channelCount?: number;
+}
+
+/** 通道占用检查结论：可用（无重叠）、冲突（与他项通道区间重叠）、未配接（未配置通道的旧项） */
+export type ChannelStatus = 'available' | 'conflict' | 'unassigned';
+
+/** 一条通道冲突：对方身份与重叠的闭区间范围 */
+export interface ChannelConflict {
+  id: string;
+  label: string;
+  /** 重叠起始通道（闭区间） */
+  overlapStart: number;
+  /** 重叠结束通道（闭区间） */
+  overlapEnd: number;
+}
+
+/** 单项提示的通道占用检查结果（只作联排提示，不影响计时语义） */
+export interface ChannelCheck {
+  status: ChannelStatus;
+  /** 冲突对方清单，按清单顺序排列；仅 status 为 conflict 时非空 */
+  conflicts: ChannelConflict[];
 }
 
 /** 迟到判定：准时（迟到量不超过该项阈值）或超限（超过阈值） */
@@ -33,6 +57,12 @@ export interface CueRow {
   durationMs: number;
   /** 该项配置的迟到阈值；未配置为 null */
   maxLatenessMs: number | null;
+  /** 该项配置的起始通道；未配接为 null */
+  channelStart: number | null;
+  /** 该项配置的占用通道数；未配接为 null */
+  channelCount: number | null;
+  /** 通道占用检查结果（载入时按闭区间比较得出，演练期间不变） */
+  channelCheck: ChannelCheck;
   /** 计划截止时刻；未启动或暂停期间待定（null） */
   plannedAtMs: number | null;
   /** 实际处理时刻；未处理为 null */
@@ -56,4 +86,6 @@ export interface Snapshot {
   finishedAtMs: number | null;
   /** 已处理项中判定为“超限”的数量（未配置阈值的项不计入） */
   overLimitCount: number;
+  /** 通道检查判定为“冲突”的项数（未配接的项不计入） */
+  channelConflictCount: number;
 }

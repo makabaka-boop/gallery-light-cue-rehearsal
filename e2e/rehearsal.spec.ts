@@ -319,3 +319,119 @@ test('非法 maxLatenessMs 就地指出条目与字段且保留当前清单', as
   await expect(page.getByTestId('cue-row-bad')).toHaveCount(0);
   await expect(page.getByTestId('status')).toContainText('待启动');
 });
+
+test('混合清单含通道冲突：双向标记与重叠范围，完成演练后轨迹仍显示', async ({ page }) => {
+  // a 占 1–10，b 占 8–17（与 a 重叠 8–10），c 占 20–23（可用），d 为未配接旧项
+  const channelCues = [
+    { id: 'a', label: '开场灯', durationMs: 1000, channelStart: 1, channelCount: 10 },
+    { id: 'b', label: '追光', durationMs: 2000, channelStart: 8, channelCount: 10 },
+    { id: 'c', label: '洗墙灯', durationMs: 3000, channelStart: 20, channelCount: 4 },
+    { id: 'd', label: '谢幕', durationMs: 1000 },
+  ];
+  await importJson(page, channelCues);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+
+  // 通道区间列：已配接项显示闭区间，旧项显示未配接
+  await expect(page.getByTestId('channels-a')).toHaveText('1–10');
+  await expect(page.getByTestId('channels-b')).toHaveText('8–17');
+  await expect(page.getByTestId('channels-c')).toHaveText('20–23');
+  await expect(page.getByTestId('channels-d')).toHaveText('未配接');
+
+  // 冲突双向标记：双方都标为冲突并列出对方标签与重叠范围
+  await expect(page.getByTestId('channel-check-a')).toHaveText('冲突：与「追光」重叠 8–10');
+  await expect(page.getByTestId('channel-check-a')).toHaveAttribute(
+    'data-channel-status',
+    'conflict',
+  );
+  await expect(page.getByTestId('channel-check-b')).toHaveText('冲突：与「开场灯」重叠 8–10');
+  await expect(page.getByTestId('channel-check-b')).toHaveAttribute(
+    'data-channel-status',
+    'conflict',
+  );
+  // 无重叠项标为可用，未配置的旧项标为未配接
+  await expect(page.getByTestId('channel-check-c')).toHaveText('可用');
+  await expect(page.getByTestId('channel-check-c')).toHaveAttribute(
+    'data-channel-status',
+    'available',
+  );
+  await expect(page.getByTestId('channel-check-d')).toHaveText('未配接');
+  await expect(page.getByTestId('channel-check-d')).toHaveAttribute(
+    'data-channel-status',
+    'unassigned',
+  );
+  await expect(page.getByTestId('channel-summary')).toContainText('冲突 2 项');
+
+  // 通道检查只作联排提示：演练照常开始、暂停、恢复并完成
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+  await page.clock.runFor(400);
+  await page.getByRole('button', { name: '暂停' }).click();
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
+  await page.getByRole('button', { name: '继续' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+
+  // 标签页降频：回调延迟投递，集中处理已到期项，整段演练不被顺延
+  await page.clock.fastForward(16600);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('done')).toContainText('计划总时长 7000 ms');
+
+  // 完成轨迹中仍显示通道检查结论（双向标记与重叠范围不随处理状态消失）
+  await expect(page.getByTestId('channel-check-a')).toHaveText('冲突：与「追光」重叠 8–10');
+  await expect(page.getByTestId('channel-check-b')).toHaveText('冲突：与「开场灯」重叠 8–10');
+  await expect(page.getByTestId('channel-check-c')).toHaveText('可用');
+  await expect(page.getByTestId('channel-check-d')).toHaveText('未配接');
+  await expect(page.getByTestId('channel-summary')).toContainText('冲突 2 项');
+});
+
+test('非法通道配接整份拒绝并保留当前清单', async ({ page }) => {
+  const validChannelCues = [
+    { id: 'a', label: '开场灯', durationMs: 1000, channelStart: 1, channelCount: 8 },
+    { id: 'b', label: '追光', durationMs: 2000 },
+  ];
+  await importJson(page, validChannelCues);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+  await expect(page.getByTestId('channels-a')).toHaveText('1–8');
+  await expect(page.getByTestId('channel-check-a')).toHaveText('可用');
+
+  const invalidSheets: Array<[string, unknown, string]> = [
+    ['只出现起始通道', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 1 }], '必须同时出现'],
+    ['只出现通道数量', [{ id: 'x', label: '坏项', durationMs: 100, channelCount: 4 }], '必须同时出现'],
+    ['起始通道为 0', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 0, channelCount: 1 }], 'channelStart'],
+    ['起始通道超过 512', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 513, channelCount: 1 }], 'channelStart'],
+    ['通道数量为 0', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 1, channelCount: 0 }], 'channelCount'],
+    ['通道数量非整数', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 1, channelCount: 2.5 }], 'channelCount'],
+    ['结束通道超过 512', [{ id: 'x', label: '坏项', durationMs: 100, channelStart: 510, channelCount: 10 }], '结束通道'],
+  ];
+  for (const [, payload, message] of invalidSheets) {
+    await importJson(page, payload);
+    await expect(page.getByRole('alert')).toContainText(message);
+    // 当前有效清单（含通道配接）与状态保持不变
+    await expect(page.getByTestId('cue-row-a')).toBeVisible();
+    await expect(page.getByTestId('cue-row-b')).toBeVisible();
+    await expect(page.getByTestId('channels-a')).toHaveText('1–8');
+    await expect(page.getByTestId('channel-check-a')).toHaveText('可用');
+    await expect(page.getByTestId('status')).toContainText('待启动');
+  }
+});
+
+test('无配接旧清单全部标为未配接，演练行为不变', async ({ page }) => {
+  await importJson(page, cues);
+  await expect(page.getByTestId('channels-a')).toHaveText('未配接');
+  await expect(page.getByTestId('channels-b')).toHaveText('未配接');
+  await expect(page.getByTestId('channels-c')).toHaveText('未配接');
+  await expect(page.getByTestId('channel-check-a')).toHaveText('未配接');
+  await expect(page.getByTestId('channel-check-c')).toHaveText('未配接');
+  await expect(page.getByTestId('channel-summary')).toContainText('冲突 0 项');
+
+  // 旧格式清单仍可直接演练：延迟回调集中处理，照常完成
+  await page.getByRole('button', { name: '开始' }).click();
+  await page.clock.fastForward(7500);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
+  await expect(page.getByTestId('actual-a')).toHaveText('7500 ms');
+  // 完成轨迹中通道列保持未配接，迟到记录行为不变
+  await expect(page.getByTestId('channel-check-b')).toHaveText('未配接');
+  await expect(page.getByTestId('verdict-a')).toContainText('迟到 6500 ms（未设标准）');
+  await expect(page.getByTestId('channel-summary')).toContainText('冲突 0 项');
+});

@@ -369,6 +369,166 @@ describe('暂停与恢复', () => {
   });
 });
 
+describe('通道占用检查（channelStart/channelCount）', () => {
+  const dmx = (id: string, label: string, channelStart: number, channelCount: number): CueItem => ({
+    id,
+    label,
+    durationMs: 1000,
+    channelStart,
+    channelCount,
+  });
+
+  it('无重叠时已配置项全部标为可用，未配置项标为未配接', () => {
+    const { engine } = setup();
+    engine.load([
+      dmx('a', '开场灯', 1, 8), // 1–8
+      dmx('b', '追光', 9, 8), // 9–16
+      { id: 'c', label: '谢幕', durationMs: 1000 }, // 未配接
+    ]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows.map((row) => row.channelCheck.status)).toEqual([
+      'available',
+      'available',
+      'unassigned',
+    ]);
+    expect(snap.rows[0].channelCheck.conflicts).toEqual([]);
+    expect(snap.rows[2].channelCheck.conflicts).toEqual([]);
+    expect(snap.channelConflictCount).toBe(0);
+  });
+
+  it('快照行携带通道区间，未配接项为 null', () => {
+    const { engine } = setup();
+    engine.load([dmx('a', '开场灯', 3, 4), { id: 'b', label: '追光', durationMs: 1000 }]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ channelStart: 3, channelCount: 4 });
+    expect(snap.rows[1]).toMatchObject({ channelStart: null, channelCount: null });
+  });
+
+  it('端点相交按闭区间判定为冲突，双方互相列出对方与重叠范围', () => {
+    const { engine } = setup();
+    engine.load([
+      dmx('a', '开场灯', 1, 5), // 1–5
+      dmx('b', '追光', 5, 6), // 5–10，端点 5 相接
+    ]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0].channelCheck).toEqual({
+      status: 'conflict',
+      conflicts: [{ id: 'b', label: '追光', overlapStart: 5, overlapEnd: 5 }],
+    });
+    expect(snap.rows[1].channelCheck).toEqual({
+      status: 'conflict',
+      conflicts: [{ id: 'a', label: '开场灯', overlapStart: 5, overlapEnd: 5 }],
+    });
+    expect(snap.channelConflictCount).toBe(2);
+  });
+
+  it('端点相邻但不相交不算冲突', () => {
+    const { engine } = setup();
+    engine.load([
+      dmx('a', '开场灯', 1, 5), // 1–5
+      dmx('b', '追光', 6, 5), // 6–10，与上一项首尾相邻
+    ]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows.every((row) => row.channelCheck.status === 'available')).toBe(true);
+    expect(snap.channelConflictCount).toBe(0);
+  });
+
+  it('多项冲突：一项与多项重叠时全部列出，冲突双方均被标记', () => {
+    const { engine } = setup();
+    engine.load([
+      dmx('a', '开场灯', 1, 10), // 1–10，与 b、c 均重叠
+      dmx('b', '追光', 5, 10), // 5–14，与 a 重叠 5–10
+      dmx('c', '洗墙灯', 8, 20), // 8–27，与 a 重叠 8–10、与 b 重叠 8–14
+      dmx('d', '谢幕', 100, 4), // 100–103，无重叠
+      { id: 'e', label: '旧项', durationMs: 1000 }, // 未配接，不参与比较
+    ]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0].channelCheck).toEqual({
+      status: 'conflict',
+      conflicts: [
+        { id: 'b', label: '追光', overlapStart: 5, overlapEnd: 10 },
+        { id: 'c', label: '洗墙灯', overlapStart: 8, overlapEnd: 10 },
+      ],
+    });
+    expect(snap.rows[1].channelCheck).toEqual({
+      status: 'conflict',
+      conflicts: [
+        { id: 'a', label: '开场灯', overlapStart: 5, overlapEnd: 10 },
+        { id: 'c', label: '洗墙灯', overlapStart: 8, overlapEnd: 14 },
+      ],
+    });
+    expect(snap.rows[2].channelCheck).toEqual({
+      status: 'conflict',
+      conflicts: [
+        { id: 'a', label: '开场灯', overlapStart: 8, overlapEnd: 10 },
+        { id: 'b', label: '追光', overlapStart: 8, overlapEnd: 14 },
+      ],
+    });
+    expect(snap.rows[3].channelCheck.status).toBe('available');
+    expect(snap.rows[4].channelCheck.status).toBe('unassigned');
+    expect(snap.channelConflictCount).toBe(3);
+  });
+
+  it('包含关系按重叠闭区间报告范围', () => {
+    const { engine } = setup();
+    engine.load([
+      dmx('a', '主灯', 10, 50), // 10–59
+      dmx('b', '灯带', 20, 5), // 20–24，被 a 包含
+    ]);
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0].channelCheck.conflicts).toEqual([
+      { id: 'b', label: '灯带', overlapStart: 20, overlapEnd: 24 },
+    ]);
+    expect(snap.rows[1].channelCheck.conflicts).toEqual([
+      { id: 'a', label: '主灯', overlapStart: 20, overlapEnd: 24 },
+    ]);
+  });
+
+  it('通道检查只作联排提示：带冲突的清单计时与完成行为不变，完成后轨迹仍带检查结论', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      dmx('a', '开场灯', 1, 8),
+      dmx('b', '追光', 8, 8), // 与 a 在通道 8 冲突
+      { id: 'c', label: '谢幕', durationMs: 3000 },
+    ]);
+    engine.start();
+    clock.jumpTo(4500); // 延迟回调集中处理 a@1000、b@2000
+    engine.handleTimer();
+    clock.advance(500); // 到 5000，c 按原计划截止时刻到期
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    // 计时语义不受通道检查影响：绝对截止不漂移，照常完成
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.map((row) => row.plannedAtMs)).toEqual([1000, 2000, 5000]);
+    expect(snap.rows.map((row) => row.actualAtMs)).toEqual([4500, 4500, 5000]);
+    expect(snap.finishedAtMs).toBe(5000);
+    // 完成轨迹中仍携带通道检查结论
+    expect(snap.rows[0].channelCheck.status).toBe('conflict');
+    expect(snap.rows[0].channelCheck.conflicts).toEqual([
+      { id: 'b', label: '追光', overlapStart: 8, overlapEnd: 8 },
+    ]);
+    expect(snap.rows[1].channelCheck.status).toBe('conflict');
+    expect(snap.rows[2].channelCheck.status).toBe('unassigned');
+    expect(snap.channelConflictCount).toBe(2);
+  });
+
+  it('旧格式清单（无通道字段）全部标为未配接，演练行为不变', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(100000);
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.every((row) => row.channelCheck.status === 'unassigned')).toBe(true);
+    expect(snap.rows.every((row) => row.channelStart === null && row.channelCount === null)).toBe(
+      true,
+    );
+    expect(snap.channelConflictCount).toBe(0);
+  });
+});
+
 describe('状态不符的重复操作', () => {
   it('各类非法操作均就地报错且不改变状态', () => {
     const { clock, engine } = loaded();

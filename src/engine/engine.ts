@@ -1,5 +1,14 @@
 import type { Clock } from './clock';
-import type { CueItem, CueLogEntry, CueRow, EngineStatus, LatenessVerdict, Snapshot } from './types';
+import { computeChannelChecks } from './channels';
+import type {
+  ChannelCheck,
+  CueItem,
+  CueLogEntry,
+  CueRow,
+  EngineStatus,
+  LatenessVerdict,
+  Snapshot,
+} from './types';
 
 export class RehearsalError extends Error {
   constructor(message: string) {
@@ -31,6 +40,8 @@ export class RehearsalEngine {
   /** 暂停时冻结的当前项剩余毫秒 */
   private remainingMs = 0;
   private log: CueLogEntry[] = [];
+  /** 载入时按闭区间比较得出的通道占用检查（只作联排提示，不参与计时） */
+  private channelChecks: ChannelCheck[] = [];
 
   constructor(clock: Clock) {
     this.clock = clock;
@@ -51,6 +62,7 @@ export class RehearsalEngine {
     this.index = 0;
     this.log = [];
     this.remainingMs = 0;
+    this.channelChecks = computeChannelChecks(this.items);
     this.status = 'ready';
   }
 
@@ -188,6 +200,9 @@ export class RehearsalEngine {
         label: item.label,
         durationMs: item.durationMs,
         maxLatenessMs,
+        channelStart: item.channelStart ?? null,
+        channelCount: item.channelCount ?? null,
+        channelCheck: this.channelChecks[i],
         plannedAtMs,
         actualAtMs,
         latenessMs,
@@ -212,6 +227,10 @@ export class RehearsalEngine {
           : null,
       overLimitCount: this.log.reduce(
         (count, entry) => count + (entry.latenessVerdict === 'over-limit' ? 1 : 0),
+        0,
+      ),
+      channelConflictCount: this.channelChecks.reduce(
+        (count, check) => count + (check.status === 'conflict' ? 1 : 0),
         0,
       ),
     };
