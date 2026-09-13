@@ -18,6 +18,26 @@ function formatMs(value: number | null): string {
   return value === null ? '—' : `${value} ms`;
 }
 
+function verdictCell(row: {
+  maxLatenessMs: number | null;
+  actualAtMs: number | null;
+  latenessMs: number | null;
+  latenessVerdict: 'on-time' | 'over-limit' | null;
+}): { text: string; className: string } {
+  if (row.actualAtMs === null || row.latenessMs === null) {
+    // 尚未处理：未配置阈值的旧格式项始终显示“未设标准”
+    return { text: row.maxLatenessMs === null ? '未设标准' : '待判定', className: 'verdict-pending' };
+  }
+  if (row.latenessVerdict === null) {
+    // 已处理但未配置阈值：只记录迟到量，不判级
+    return { text: `迟到 ${row.latenessMs} ms（未设标准）`, className: 'verdict-nostandard' };
+  }
+  if (row.latenessVerdict === 'over-limit') {
+    return { text: `迟到 ${row.latenessMs} ms（超限）`, className: 'verdict-over' };
+  }
+  return { text: `迟到 ${row.latenessMs} ms（准时）`, className: 'verdict-ontime' };
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(() => engine.getSnapshot());
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +174,12 @@ export default function App() {
       )}
 
       {rows.length > 0 && (
+        <p className="summary" data-testid="lateness-summary">
+          迟到判定汇总：超限 {snapshot.overLimitCount} 项
+        </p>
+      )}
+
+      {rows.length > 0 && (
         <table>
           <thead>
             <tr>
@@ -161,21 +187,36 @@ export default function App() {
               <th scope="col">ID</th>
               <th scope="col">提示</th>
               <th scope="col">时长</th>
+              <th scope="col">迟到上限</th>
               <th scope="col">计划截止</th>
               <th scope="col">实际处理</th>
+              <th scope="col">迟到判定</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr key={row.id} data-testid={`cue-row-${row.id}`}>
-                <td>{i + 1}</td>
-                <td>{row.id}</td>
-                <td>{row.label}</td>
-                <td>{row.durationMs} ms</td>
-                <td data-testid={`planned-${row.id}`}>{formatMs(row.plannedAtMs)}</td>
-                <td data-testid={`actual-${row.id}`}>{formatMs(row.actualAtMs)}</td>
-              </tr>
-            ))}
+            {rows.map((row, i) => {
+              const verdict = verdictCell(row);
+              return (
+                <tr key={row.id} data-testid={`cue-row-${row.id}`}>
+                  <td>{i + 1}</td>
+                  <td>{row.id}</td>
+                  <td>{row.label}</td>
+                  <td>{row.durationMs} ms</td>
+                  <td data-testid={`threshold-${row.id}`}>
+                    {row.maxLatenessMs === null ? '未设标准' : `${row.maxLatenessMs} ms`}
+                  </td>
+                  <td data-testid={`planned-${row.id}`}>{formatMs(row.plannedAtMs)}</td>
+                  <td data-testid={`actual-${row.id}`}>{formatMs(row.actualAtMs)}</td>
+                  <td
+                    className={verdict.className}
+                    data-testid={`verdict-${row.id}`}
+                    data-verdict={row.latenessVerdict ?? 'none'}
+                  >
+                    {verdict.text}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

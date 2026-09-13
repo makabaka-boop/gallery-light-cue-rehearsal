@@ -110,3 +110,26 @@ th {
   color: #9fb0c3;
   font-weight: 600;
 }
+
+.summary {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: #c7d3e2;
+}
+
+.verdict-pending {
+  color: #7d8ba0;
+}
+
+.verdict-nostandard {
+  color: #9fb0c3;
+}
+
+.verdict-ontime {
+  color: #6fd38c;
+}
+
+.verdict-over {
+  color: #ff7d7d;
+  font-weight: 600;
+}

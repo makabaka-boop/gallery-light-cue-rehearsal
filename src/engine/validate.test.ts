@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { CueSheetError, MAX_DURATION_MS, MIN_DURATION_MS, parseCueSheet } from './validate';
+import {
+  CueSheetError,
+  MAX_DURATION_MS,
+  MAX_MAX_LATENESS_MS,
+  MIN_DURATION_MS,
+  MIN_MAX_LATENESS_MS,
+  parseCueSheet,
+} from './validate';
 
 const valid = [
   { id: 'a', label: '开场灯', durationMs: 1000 },
@@ -25,6 +32,58 @@ describe('parseCueSheet 合法输入', () => {
   it('接受含中文与特殊字符的 UTF-8 内容', () => {
     const items = parseCueSheet('[{"id":"x","label":"追光·主舞台 💡","durationMs":100}]');
     expect(items[0].label).toBe('追光·主舞台 💡');
+  });
+});
+
+describe('parseCueSheet maxLatenessMs 可选字段', () => {
+  it('省略时不设置该字段（旧清单保持原样）', () => {
+    const items = parseCueSheet(JSON.stringify(valid));
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.maxLatenessMs === undefined)).toBe(true);
+  });
+
+  it('接受边界迟到阈值 0 与 600000（含零容忍）', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'lo', label: '零容忍', durationMs: 100, maxLatenessMs: MIN_MAX_LATENESS_MS },
+        { id: 'hi', label: '最宽', durationMs: 100, maxLatenessMs: MAX_MAX_LATENESS_MS },
+      ]),
+    );
+    expect(items.map((item) => item.maxLatenessMs)).toEqual([0, 600000]);
+  });
+
+  it('新旧字段可在同一清单内混用', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'old', label: '旧项', durationMs: 100 },
+        { id: 'new', label: '新项', durationMs: 100, maxLatenessMs: 500 },
+      ]),
+    );
+    expect(items[0].maxLatenessMs).toBeUndefined();
+    expect(items[1].maxLatenessMs).toBe(500);
+  });
+
+  const invalidCases: Array<[string, unknown, string]> = [
+    ['maxLatenessMs 为小数', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: 0.5 }], 'maxLatenessMs 必须是整数'],
+    ['maxLatenessMs 为字符串', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: '100' }], 'maxLatenessMs 必须是整数'],
+    ['maxLatenessMs 为布尔', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: true }], 'maxLatenessMs 必须是整数'],
+    ['maxLatenessMs 为 null', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: null }], 'maxLatenessMs 必须是整数'],
+    ['maxLatenessMs 为负数', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: -1 }], '0 到 600000'],
+    ['maxLatenessMs 大于 600000', [{ id: 'a', label: 'x', durationMs: 100, maxLatenessMs: 600001 }], '0 到 600000'],
+  ];
+
+  it.each(invalidCases)('%s', (_name, payload, message) => {
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(CueSheetError);
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(message);
+  });
+
+  it('非法 maxLatenessMs 指出具体条目序号与字段', () => {
+    const payload = [
+      valid[0],
+      { id: 'b', label: 'y', durationMs: 200, maxLatenessMs: 600001 },
+    ];
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('第 2 项');
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('maxLatenessMs');
   });
 });
 

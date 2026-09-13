@@ -1,5 +1,5 @@
 import type { Clock } from './clock';
-import type { CueItem, CueLogEntry, CueRow, EngineStatus, Snapshot } from './types';
+import type { CueItem, CueLogEntry, CueRow, EngineStatus, LatenessVerdict, Snapshot } from './types';
 
 export class RehearsalError extends Error {
   constructor(message: string) {
@@ -104,11 +104,24 @@ export class RehearsalEngine {
     const now = this.clock.now();
     while (this.index < this.items.length && this.deadlineMs <= now) {
       const item = this.items[this.index];
+      const plannedAtMs = this.deadlineMs - this.startedAtMs;
+      const actualAtMs = now - this.startedAtMs;
+      // 迟到量 = 实际处理时刻 - 计划截止时刻；按各项自己的阈值独立判定，
+      // 一次延迟跨过多项时，每项的准时/超限结论互不影响。
+      const latenessMs = actualAtMs - plannedAtMs;
+      const threshold = item.maxLatenessMs ?? null;
+      let latenessVerdict: LatenessVerdict | null = null;
+      if (threshold !== null) {
+        latenessVerdict = latenessMs <= threshold ? 'on-time' : 'over-limit';
+      }
       this.log.push({
         id: item.id,
         label: item.label,
-        plannedAtMs: this.deadlineMs - this.startedAtMs,
-        actualAtMs: now - this.startedAtMs,
+        plannedAtMs,
+        actualAtMs,
+        maxLatenessMs: threshold,
+        latenessMs,
+        latenessVerdict,
       });
       this.index += 1;
       if (this.index < this.items.length) {
@@ -130,18 +143,33 @@ export class RehearsalEngine {
     let pendingOffsetMs = this.deadlineMs - this.startedAtMs;
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
+      const maxLatenessMs = item.maxLatenessMs ?? null;
       let plannedAtMs: number | null = null;
       let actualAtMs: number | null = null;
+      let latenessMs: number | null = null;
+      let latenessVerdict: LatenessVerdict | null = null;
       if (i < this.index) {
-        plannedAtMs = this.log[i].plannedAtMs;
-        actualAtMs = this.log[i].actualAtMs;
+        const entry = this.log[i];
+        plannedAtMs = entry.plannedAtMs;
+        actualAtMs = entry.actualAtMs;
+        latenessMs = entry.latenessMs;
+        latenessVerdict = entry.latenessVerdict;
       } else if (this.status === 'running') {
         if (i > this.index) {
           pendingOffsetMs += item.durationMs;
         }
         plannedAtMs = pendingOffsetMs;
       }
-      rows.push({ id: item.id, label: item.label, durationMs: item.durationMs, plannedAtMs, actualAtMs });
+      rows.push({
+        id: item.id,
+        label: item.label,
+        durationMs: item.durationMs,
+        maxLatenessMs,
+        plannedAtMs,
+        actualAtMs,
+        latenessMs,
+        latenessVerdict,
+      });
     }
     const isActive = this.status === 'running' || this.status === 'paused';
     return {
@@ -159,6 +187,10 @@ export class RehearsalEngine {
         this.status === 'completed' && this.log.length > 0
           ? this.log[this.log.length - 1].actualAtMs
           : null,
+      overLimitCount: this.log.reduce(
+        (count, entry) => count + (entry.latenessVerdict === 'over-limit' ? 1 : 0),
+        0,
+      ),
     };
   }
 }

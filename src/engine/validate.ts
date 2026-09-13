@@ -2,8 +2,10 @@ import type { CueItem } from './types';
 
 export const MIN_DURATION_MS = 100;
 export const MAX_DURATION_MS = 600000;
+export const MIN_MAX_LATENESS_MS = 0;
+export const MAX_MAX_LATENESS_MS = 600000;
 
-const ALLOWED_KEYS = new Set(['id', 'label', 'durationMs']);
+const ALLOWED_KEYS = new Set(['id', 'label', 'durationMs', 'maxLatenessMs']);
 
 export class CueSheetError extends Error {
   constructor(message: string) {
@@ -41,10 +43,12 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
   const record = raw as Record<string, unknown>;
   for (const key of Object.keys(record)) {
     if (!ALLOWED_KEYS.has(key)) {
-      throw new CueSheetError(`${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs`);
+      throw new CueSheetError(
+        `${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs、maxLatenessMs`,
+      );
     }
   }
-  const { id, label, durationMs } = record;
+  const { id, label, durationMs, maxLatenessMs } = record;
 
   if (typeof id !== 'string' && typeof id !== 'number') {
     throw new CueSheetError(`${where}的 id 必须是字符串或数字`);
@@ -75,5 +79,20 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
     );
   }
 
-  return { id: idText, label, durationMs };
+  const item: CueItem = { id: idText, label, durationMs };
+  // maxLatenessMs 为可选字段：省略时只记录迟到量，不判级；
+  // 出现时必须是 0 ～ 600000 的整数，任一非法值整份拒绝（exactOptionalPropertyTypes 下显式赋值）。
+  if (maxLatenessMs !== undefined) {
+    if (typeof maxLatenessMs !== 'number' || !Number.isInteger(maxLatenessMs)) {
+      throw new CueSheetError(`${where}的 maxLatenessMs 必须是整数`);
+    }
+    if (maxLatenessMs < MIN_MAX_LATENESS_MS || maxLatenessMs > MAX_MAX_LATENESS_MS) {
+      throw new CueSheetError(
+        `${where}的 maxLatenessMs 必须在 ${MIN_MAX_LATENESS_MS} 到 ${MAX_MAX_LATENESS_MS} 之间`,
+      );
+    }
+    item.maxLatenessMs = maxLatenessMs;
+  }
+
+  return item;
 }

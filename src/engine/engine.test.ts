@@ -151,6 +151,124 @@ describe('延迟回调（标签页降频）', () => {
   });
 });
 
+describe('迟到判定（maxLatenessMs）', () => {
+  it('准时处理时迟到量为 0，零容忍阈值也判定准时', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 0 }]);
+    engine.start();
+    clock.advance(1000);
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({
+      plannedAtMs: 1000,
+      actualAtMs: 1000,
+      latenessMs: 0,
+      latenessVerdict: 'on-time',
+    });
+    expect(snap.overLimitCount).toBe(0);
+  });
+
+  it('阈值边界：迟到量等于阈值判准时，超过一毫判超限', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 300 },
+      { id: 'b', label: '追光', durationMs: 2000, maxLatenessMs: 300 },
+    ]);
+    engine.start();
+    // a 在 1300 处理，迟到恰为 300，等于阈值 => 准时
+    clock.jumpTo(1300);
+    expect(engine.handleTimer()).toBe(1700);
+    expect(engine.getSnapshot().rows[0]).toMatchObject({
+      latenessMs: 300,
+      latenessVerdict: 'on-time',
+    });
+    expect(engine.getSnapshot().overLimitCount).toBe(0);
+
+    // b 在 3301 处理，迟到 301（实际 3301 - 计划 3000），超过阈值 300 => 超限
+    clock.jumpTo(3301);
+    expect(engine.handleTimer()).toBeNull();
+    const snap = engine.getSnapshot();
+    expect(snap.rows[1]).toMatchObject({
+      plannedAtMs: 3000,
+      actualAtMs: 3301,
+      latenessMs: 301,
+      latenessVerdict: 'over-limit',
+    });
+    expect(snap.overLimitCount).toBe(1);
+  });
+
+  it('一次延迟跨过多项时按各项阈值独立判定，未配置阈值的项只记录不判级', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 5000 }, // 迟到 3500 <= 5000 准时
+      { id: 'b', label: '追光', durationMs: 2000, maxLatenessMs: 1000 }, // 迟到 1500 > 1000 超限
+      { id: 'c', label: '谢幕', durationMs: 3000 }, // 未设阈值，记录但不判级
+    ]);
+    engine.start();
+    clock.jumpTo(4500); // 一次回调越过 a@1000、b@3000
+    engine.handleTimer();
+
+    let snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ latenessMs: 3500, latenessVerdict: 'on-time' });
+    expect(snap.rows[1]).toMatchObject({ latenessMs: 1500, latenessVerdict: 'over-limit' });
+    expect(snap.rows[2]).toMatchObject({
+      latenessMs: null,
+      latenessVerdict: null,
+      maxLatenessMs: null,
+    });
+    expect(snap.overLimitCount).toBe(1); // 仅 b 超限，未设阈值的 c 尚未处理
+
+    clock.advance(1500); // c@6000 准时
+    expect(engine.handleTimer()).toBeNull();
+    snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows[2]).toMatchObject({
+      plannedAtMs: 6000,
+      actualAtMs: 6000,
+      latenessMs: 0,
+      latenessVerdict: null,
+    });
+    // 未配置阈值的项即使迟到也不计入超限数量
+    expect(snap.overLimitCount).toBe(1);
+  });
+
+  it('旧清单（均无阈值）只记录迟到量，全部不判级、超限数始终为零', () => {
+    const { clock, engine } = loaded();
+    engine.start();
+    clock.jumpTo(100000);
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows.map((row) => row.latenessMs)).toEqual([99000, 97000, 94000]);
+    expect(snap.rows.every((row) => row.latenessVerdict === null)).toBe(true);
+    expect(snap.rows.every((row) => row.maxLatenessMs === null)).toBe(true);
+    expect(snap.overLimitCount).toBe(0);
+  });
+
+  it('暂停恢复后以重建的截止时刻计算迟到量，判定规则不变', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100 }]);
+    engine.start();
+    clock.advance(400);
+    engine.pause();
+    clock.advance(10000); // 暂停期间不计时
+    engine.resume(); // 新截止时刻 = 11000
+    // 回调延迟到 11150：相对新截止迟到 150，超过 100 => 超限
+    clock.advance(750); // 11150
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({
+      plannedAtMs: 11000,
+      actualAtMs: 11150,
+      latenessMs: 150,
+      latenessVerdict: 'over-limit',
+    });
+    expect(snap.overLimitCount).toBe(1);
+  });
+});
+
 describe('暂停与恢复', () => {
   it('暂停只冻结当前项剩余毫秒，恢复以该余量建立新截止时刻', () => {
     const { clock, engine } = loaded();

@@ -33,6 +33,10 @@ test('非法清单整份拒绝，且不替换当前有效数据', async ({ page 
   await expect(page.getByTestId('status')).toContainText('待启动');
   await expect(page.getByTestId('cue-row-a')).toBeVisible();
   await expect(page.getByTestId('cue-row-c')).toBeVisible();
+  // 旧格式（无 maxLatenessMs）：阈值列与判定列均显示“未设标准”，超限汇总为 0
+  await expect(page.getByTestId('threshold-a')).toHaveText('未设标准');
+  await expect(page.getByTestId('verdict-a')).toHaveText('未设标准');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
 
   const invalidSheets: Array<[string, unknown, string]> = [
     ['时长越界', [{ id: 'x', label: '坏项', durationMs: 50 }], 'durationMs'],
@@ -41,6 +45,8 @@ test('非法清单整份拒绝，且不替换当前有效数据', async ({ page 
     ['含额外字段', [{ id: 'x', label: '多字段', durationMs: 100, note: 1 }], '不允许的字段'],
     ['label 为空', [{ id: 'x', label: '  ', durationMs: 100 }], '非空字符串'],
     ['时长非整数', [{ id: 'x', label: '小数', durationMs: 100.5 }], '整数'],
+    ['迟到阈值非整数', [{ id: 'x', label: '阈值小数', durationMs: 100, maxLatenessMs: 0.5 }], 'maxLatenessMs'],
+    ['迟到阈值越界', [{ id: 'x', label: '阈值越界', durationMs: 100, maxLatenessMs: 600001 }], 'maxLatenessMs'],
   ];
   for (const [, payload, message] of invalidSheets) {
     await importJson(page, payload);
@@ -117,6 +123,12 @@ test('暂停冻结余量、恢复重建截止，延迟回调集中处理且不�
   await expect(page.getByTestId('done')).toContainText('计划截止 16000 ms');
   await expect(page.getByTestId('done')).toContainText('实际处理 16000 ms');
 
+  // 旧格式演练路径行为不变：迟到量照记但不判级，三行均为“未设标准”，汇总始终 0
+  await expect(page.getByTestId('verdict-a')).toHaveText('迟到 3500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-b')).toHaveText('迟到 1500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-c')).toHaveText('迟到 0 ms（未设标准）');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+
   // 完成后操作报错且界面保持稳定
   await page.getByRole('button', { name: '开始' }).click();
   await expect(page.getByRole('alert')).toContainText('已完成');
@@ -155,4 +167,65 @@ test('延迟回调一次跨过全部项时集中处理并完成', async ({ page 
   await expect(page.getByTestId('actual-b')).toHaveText('7500 ms');
   await expect(page.getByTestId('actual-c')).toHaveText('7500 ms');
   await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
+  // 旧格式：各项迟到量照记但无判定，汇总不统计超限
+  await expect(page.getByTestId('verdict-a')).toContainText('迟到 6500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-b')).toContainText('迟到 4500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-c')).toContainText('迟到 1500 ms（未设标准）');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+});
+
+test('混合新旧字段：制造一次延迟后各行独立判定并汇总超限数', async ({ page }) => {
+  // a 阈值 5000（迟到 3500 => 准时）；b 阈值 1000（迟到 1500 => 超限）；c 为旧项无阈值
+  const mixedCues = [
+    { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 5000 },
+    { id: 'b', label: '追光', durationMs: 2000, maxLatenessMs: 1000 },
+    { id: 'c', label: '谢幕', durationMs: 3000 },
+  ];
+  await importJson(page, mixedCues);
+
+  // 待启动：阈值列分别显示配置值与“未设标准”；判定列未处理时显示待判定/未设标准
+  await expect(page.getByTestId('threshold-a')).toHaveText('5000 ms');
+  await expect(page.getByTestId('threshold-b')).toHaveText('1000 ms');
+  await expect(page.getByTestId('threshold-c')).toHaveText('未设标准');
+  await expect(page.getByTestId('verdict-a')).toHaveText('待判定');
+  await expect(page.getByTestId('verdict-b')).toHaveText('待判定');
+  await expect(page.getByTestId('verdict-c')).toHaveText('未设标准');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+
+  await page.getByRole('button', { name: '开始' }).click();
+
+  // 标签页降频：回调被延迟到 4500ms 投递一次，越过 a@1000、b@3000
+  await page.clock.fastForward(4500);
+
+  // a：迟到 3500 <= 5000 => 准时；b：迟到 1500 > 1000 => 超限；c 尚未处理
+  await expect(page.getByTestId('actual-a')).toHaveText('4500 ms');
+  await expect(page.getByTestId('verdict-a')).toHaveText('迟到 3500 ms（准时）');
+  await expect(page.getByTestId('actual-b')).toHaveText('4500 ms');
+  await expect(page.getByTestId('verdict-b')).toHaveText('迟到 1500 ms（超限）');
+  await expect(page.getByTestId('actual-c')).toHaveText('—');
+  await expect(page.getByTestId('verdict-c')).toHaveText('未设标准');
+  // 进行中即展示汇总：仅 b 超限
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 1 项');
+
+  // c 在原计划截止 6000ms 准时到期：绝对截止不因延迟漂移；无阈值不判级
+  await page.clock.runFor(1500);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('actual-c')).toHaveText('6000 ms');
+  await expect(page.getByTestId('verdict-c')).toHaveText('迟到 0 ms（未设标准）');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 1 项');
+});
+
+test('非法 maxLatenessMs 就地指出条目与字段且保留当前清单', async ({ page }) => {
+  await importJson(page, cues);
+  await importJson(page, [
+    { id: 'a', label: '开场灯', durationMs: 1000 },
+    { id: 'bad', label: '阈值缺失', durationMs: 100, maxLatenessMs: 700000 },
+  ]);
+  await expect(page.getByRole('alert')).toContainText('第 2 项');
+  await expect(page.getByRole('alert')).toContainText('maxLatenessMs');
+  // 当前清单与运行状态保持不变
+  await expect(page.getByTestId('cue-row-a')).toBeVisible();
+  await expect(page.getByTestId('cue-row-c')).toBeVisible();
+  await expect(page.getByTestId('cue-row-bad')).toHaveCount(0);
+  await expect(page.getByTestId('status')).toContainText('待启动');
 });
