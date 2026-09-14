@@ -269,6 +269,276 @@ describe('迟到判定（maxLatenessMs）', () => {
   });
 });
 
+describe('到期预告（warningLeadMs）', () => {
+  it('启动即安排到预告点：预告点前等待预告，跨过预告点变即将到期，截止仍按原规则结算', () => {
+    const { clock, engine } = setup();
+    // a 时长 1000、提前 300 预告：预告点 = 700，截止 = 1000
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    expect(engine.start()).toBe(700); // 首次定时安排到预告点，而非截止点
+
+    clock.advance(699);
+    let snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('waiting');
+    expect(snap.currentRemainingMs).toBe(301);
+    expect(snap.rows[0]).toMatchObject({ warningLeadMs: 300, actualAtMs: null });
+
+    // 预告点之前的回调不结算，返回距预告点的余量
+    expect(engine.handleTimer()).toBe(1);
+    expect(engine.getSnapshot().currentWarning).toBe('waiting');
+
+    clock.advance(1); // 700：到达预告点
+    expect(engine.handleTimer()).toBe(300); // 下一个事件是截止点，返回 300
+    snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('due-soon');
+    expect(snap.currentRemainingMs).toBe(300);
+    expect(snap.rows[0].actualAtMs).toBeNull(); // 预告只标记，不结算
+
+    clock.advance(299);
+    expect(engine.handleTimer()).toBe(1);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+
+    clock.advance(1); // 1000：到达原截止点，按既有规则结算
+    expect(engine.handleTimer()).toBeNull();
+    snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.currentWarning).toBeNull();
+    expect(snap.rows[0]).toMatchObject({
+      plannedAtMs: 1000,
+      actualAtMs: 1000,
+      kind: 'settled',
+      latenessMs: 0,
+    });
+  });
+
+  it('多项各自独立预告：前项结算后，下一项先等待预告再即将到期', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }, // 预告 700，截止 1000
+      { id: 'b', label: '追光', durationMs: 2000, warningLeadMs: 500 }, // 预告 2500，截止 3000
+    ]);
+    engine.start();
+
+    clock.advance(700);
+    expect(engine.handleTimer()).toBe(300);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+
+    clock.advance(300); // a@1000 结算；b 的预告点 2500 尚远
+    expect(engine.handleTimer()).toBe(1500);
+    let snap = engine.getSnapshot();
+    expect(snap.currentIndex).toBe(1);
+    expect(snap.currentWarning).toBe('waiting');
+
+    clock.advance(1500); // 到 2500：b 预告点
+    expect(engine.handleTimer()).toBe(500);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+
+    clock.advance(500); // b@3000 截止
+    expect(engine.handleTimer()).toBeNull();
+    snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows.map((row) => row.actualAtMs)).toEqual([1000, 3000]);
+  });
+
+  it('一次延迟回调同时跨过预告点与截止点：直接结算，当前项推进且后续截止不被改写', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }, // 预告 700，截止 1000
+      { id: 'b', label: '追光', durationMs: 2000, warningLeadMs: 500 }, // 预告 2500，截止 3000
+    ]);
+    engine.start();
+    // 回调被延迟到 2700 才投递：越过 a 的预告点 700 与截止 1000（a 结算），
+    // 并越过 b 的预告点 2500 但未到 b 的截止 3000（b 直接呈现“即将到期”）
+    clock.jumpTo(2700);
+    expect(engine.handleTimer()).toBe(300);
+
+    const snap = engine.getSnapshot();
+    expect(snap.currentIndex).toBe(1);
+    expect(snap.currentWarning).toBe('due-soon'); // 依据当前绝对时刻推进，错过的预告点不补发
+    expect(snap.rows[0]).toMatchObject({ plannedAtMs: 1000, actualAtMs: 2700, kind: 'settled' });
+    expect(snap.rows[1]).toMatchObject({ plannedAtMs: 3000, actualAtMs: null });
+
+    clock.advance(300); // b 仍按原截止时刻 3000 结算
+    expect(engine.handleTimer()).toBeNull();
+    expect(engine.getSnapshot().rows[1]).toMatchObject({ plannedAtMs: 3000, actualAtMs: 3000 });
+  });
+
+  it('一次延迟回调跨过预告点但未到截止点：仅标记即将到期，不产生轨迹', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    engine.start();
+    clock.jumpTo(850); // 越过预告点 700，未到截止 1000
+    expect(engine.handleTimer()).toBe(150);
+    const snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('due-soon');
+    expect(snap.currentRemainingMs).toBe(150);
+    expect(snap.rows[0].actualAtMs).toBeNull();
+  });
+
+  it('等待预告期间暂停冻结预告进度，恢复后按剩余时间重建预告边界', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    engine.start();
+    clock.advance(400); // 余量 600 > 预告量 300：等待预告
+    engine.pause();
+
+    let snap = engine.getSnapshot();
+    expect(snap.status).toBe('paused');
+    expect(snap.currentRemainingMs).toBe(600);
+    expect(snap.currentWarning).toBe('waiting'); // 预告进度冻结在“等待预告”
+
+    clock.advance(10000); // 暂停期间不计时
+    snap = engine.getSnapshot();
+    expect(snap.currentRemainingMs).toBe(600);
+    expect(snap.currentWarning).toBe('waiting');
+
+    expect(engine.resume()).toBe(300); // 新预告点 = 恢复时刻 + (600 - 300)
+    snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('waiting');
+    expect(snap.rows[0].plannedAtMs).toBe(11000);
+
+    clock.advance(300); // 10700：到达重建后的预告点
+    expect(engine.handleTimer()).toBe(300);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+
+    clock.advance(300); // 11000：截止
+    expect(engine.handleTimer()).toBeNull();
+    expect(engine.getSnapshot().rows[0]).toMatchObject({ plannedAtMs: 11000, actualAtMs: 11000 });
+  });
+
+  it('即将到期期间暂停：冻结为即将到期，恢复后仍在即将到期并按重建截止结算', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    engine.start();
+    clock.advance(800); // 余量 200 <= 300：即将到期
+    engine.pause();
+
+    let snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('due-soon');
+    expect(snap.currentRemainingMs).toBe(200);
+
+    clock.advance(10000);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+
+    expect(engine.resume()).toBe(200); // 预告点已在过去，下一个事件即截止
+    snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('due-soon');
+
+    clock.advance(200);
+    expect(engine.handleTimer()).toBeNull();
+    expect(engine.getSnapshot().rows[0]).toMatchObject({ plannedAtMs: 11000, actualAtMs: 11000 });
+  });
+
+  it('暂停时刻已越过预告点但未到截止：按即将到期冻结，预告状态不回退', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    engine.start();
+    clock.jumpTo(850);
+    engine.pause();
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('paused');
+    expect(snap.currentWarning).toBe('due-soon');
+    expect(snap.currentRemainingMs).toBe(150);
+  });
+
+  it('暂停时刻跨过预告点与截止点：照常结算并完成，不残留预告状态', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }]);
+    engine.start();
+    clock.jumpTo(1200);
+    engine.pause();
+    const snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.currentWarning).toBeNull();
+    expect(snap.rows[0]).toMatchObject({ plannedAtMs: 1000, actualAtMs: 1200 });
+  });
+
+  it('等待预告与即将到期期间跳过：均记为人工跳过，随后沿原时间线安排下一项预告', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 }, // 预告 700
+      { id: 'b', label: '追光', durationMs: 2000, warningLeadMs: 500 }, // 预告 2500
+    ]);
+    engine.start();
+
+    clock.advance(400); // a 等待预告时跳过
+    expect(engine.skip()).toBe(2100); // 下一项 b 预告点 2500 - 当前 400
+    let snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({ kind: 'skipped', latenessMs: null });
+    expect(snap.currentIndex).toBe(1);
+    expect(snap.currentWarning).toBe('waiting');
+
+    clock.jumpTo(2700); // 越过 b 预告点 2500：即将到期时跳过
+    expect(engine.skip()).toBeNull(); // b 是末项，直接完成
+    snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows[1]).toMatchObject({ kind: 'skipped', plannedAtMs: 3000, actualAtMs: 2700 });
+  });
+
+  it('warningLeadMs 为 0：预告点即截止点，等待预告直到截止、结算时直接完成', () => {
+    const { clock, engine } = setup();
+    engine.load([{ id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 0 }]);
+    expect(engine.start()).toBe(1000); // 预告点 = 截止点
+
+    clock.advance(999);
+    let snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBe('waiting');
+    expect(engine.handleTimer()).toBe(1);
+
+    clock.advance(1);
+    expect(engine.handleTimer()).toBeNull();
+    snap = engine.getSnapshot();
+    expect(snap.status).toBe('completed');
+    expect(snap.rows[0]).toMatchObject({ plannedAtMs: 1000, actualAtMs: 1000 });
+  });
+
+  it('预告不影响迟到判定、超限汇总与暂停恢复后的迟到量', () => {
+    const { clock, engine } = setup();
+    engine.load([
+      { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100, warningLeadMs: 300 },
+    ]);
+    engine.start();
+    clock.advance(400); // 余量 600 > 300：等待预告
+    engine.pause(); // 冻结余量 600
+    clock.advance(10000); // 暂停期间不计时
+    engine.resume(); // 恢复于 10400；新截止 11000，新预告点 10700
+    clock.advance(300); // 到 10700：预告点，仍未到期
+    expect(engine.handleTimer()).toBe(300);
+    expect(engine.getSnapshot().currentWarning).toBe('due-soon');
+    // 回调延迟到 11150 才投递：相对新截止迟到 150 > 100 => 超限
+    clock.advance(450);
+    expect(engine.handleTimer()).toBeNull();
+
+    const snap = engine.getSnapshot();
+    expect(snap.rows[0]).toMatchObject({
+      plannedAtMs: 11000,
+      actualAtMs: 11150,
+      latenessMs: 150,
+      latenessVerdict: 'over-limit',
+    });
+    expect(snap.overLimitCount).toBe(1);
+  });
+
+  it('未配置 warningLeadMs 的旧清单：快照无预告状态，首次定时仍安排到截止点', () => {
+    const { clock, engine } = loaded();
+    expect(engine.start()).toBe(1000);
+    let snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBeNull();
+    expect(snap.rows.every((row) => row.warningLeadMs === null)).toBe(true);
+
+    clock.advance(400);
+    engine.pause();
+    snap = engine.getSnapshot();
+    expect(snap.currentWarning).toBeNull();
+    expect(snap.currentRemainingMs).toBe(600);
+    expect(engine.resume()).toBe(600);
+    expect(engine.getSnapshot().currentWarning).toBeNull();
+
+    clock.jumpTo(100000);
+    expect(engine.handleTimer()).toBeNull();
+    expect(engine.getSnapshot().currentWarning).toBeNull();
+  });
+});
+
 describe('暂停与恢复', () => {
   it('暂停只冻结当前项剩余毫秒，恢复以该余量建立新截止时刻', () => {
     const { clock, engine } = loaded();

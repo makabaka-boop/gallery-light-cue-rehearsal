@@ -77,6 +77,28 @@ function channelCheckCell(row: CueRow): { text: string; className: string } {
   return { text: `冲突：${detail}`, className: 'channel-conflict' };
 }
 
+/**
+ * 当前提示旁的到期预告徽标。仅当前项配置了 warningLeadMs 时出现：
+ * 等待预告（尚在预告点之前，显示距预告点的毫秒）或即将到期（已过预告点，显示距截止的剩余毫秒）。
+ * 未配置该字段的旧清单返回 null，不新增任何提示。
+ */
+function warningBadge(snapshot: Snapshot, currentRow: CueRow): { text: string; state: string } | null {
+  if (currentRow.warningLeadMs === null || snapshot.currentWarning === null) {
+    return null;
+  }
+  const remaining = snapshot.currentRemainingMs ?? 0;
+  const lead = currentRow.warningLeadMs;
+  if (snapshot.status === 'paused') {
+    // 暂停冻结预告进度：以冻结余量展示，恢复后按余量重建预告边界
+    return snapshot.currentWarning === 'due-soon'
+      ? { text: `预告已冻结 · 即将到期 · 冻结剩余 ${remaining} ms`, state: 'due-soon' }
+      : { text: `预告已冻结 · 等待预告 · 距预告点 ${remaining - lead} ms`, state: 'waiting' };
+  }
+  return snapshot.currentWarning === 'due-soon'
+    ? { text: `即将到期 · 剩余 ${remaining} ms`, state: 'due-soon' }
+    : { text: `等待预告 · 距预告点 ${remaining - lead} ms（距截止 ${remaining} ms）`, state: 'waiting' };
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(() => engine.getSnapshot());
   const [error, setError] = useState<string | null>(null);
@@ -159,11 +181,23 @@ export default function App() {
       }
     });
 
-  useEffect(() => clearTimer, []);
-
   const { status, rows } = snapshot;
   const currentRow = snapshot.currentIndex !== null ? rows[snapshot.currentIndex] : null;
   const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
+  const badge = currentRow ? warningBadge(snapshot, currentRow) : null;
+
+  // 纯展示用刷新：进行中以固定频率重算快照，让预告徽标的剩余毫秒随单调时钟实时跳动。
+  // 只读取状态、不驱动引擎（截止时刻与预告点仍由 engine.start/resume 安排的 setTimeout 结算），
+  // 未进行中不安装；暂停时预告进度冻结，无需刷新。
+  useEffect(() => {
+    if (status !== 'running') {
+      return;
+    }
+    const handle = window.setInterval(sync, 50);
+    return () => window.clearInterval(handle);
+  }, [status]);
+
+  useEffect(() => clearTimer, []);
 
   return (
     <main className="app">
@@ -204,11 +238,29 @@ export default function App() {
       {status === 'running' && currentRow && (
         <p className="current" data-testid="current">
           当前应执行：{currentRow.label}（计划截止 {formatMs(currentRow.plannedAtMs)}）
+          {badge && (
+            <span
+              className={`warning-badge warning-${badge.state}`}
+              data-testid="warning-badge"
+              data-warning={badge.state}
+            >
+              {badge.text}
+            </span>
+          )}
         </p>
       )}
       {status === 'paused' && currentRow && (
         <p className="current" data-testid="current">
           已暂停于：{currentRow.label}，冻结剩余 {formatMs(snapshot.currentRemainingMs)}
+          {badge && (
+            <span
+              className={`warning-badge warning-${badge.state}`}
+              data-testid="warning-badge"
+              data-warning={badge.state}
+            >
+              {badge.text}
+            </span>
+          )}
         </p>
       )}
       {status === 'completed' && lastRow && (

@@ -173,6 +173,166 @@ test('暂停中导入另一份清单被拒绝，提示明确反映暂停状态',
   await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
 });
 
+test('warningLeadMs 预告：新旧字段混合清单完整演练，预告边界、暂停恢复与截止结算', async ({ page }) => {
+  // a 带预告（提前 300）与阈值；b 带预告（提前 500）；c 为旧项，全程无预告提示
+  const warningCues = [
+    { id: 'a', label: '开场灯', durationMs: 1000, maxLatenessMs: 100, warningLeadMs: 300 },
+    { id: 'b', label: '追光', durationMs: 2000, warningLeadMs: 500 },
+    { id: 'c', label: '谢幕', durationMs: 3000 },
+  ];
+  await importJson(page, warningCues);
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+
+  // 启动后当前项 a 处于等待预告；旧项 c 即使成为当前项也不显示预告徽标（先确认初始等待态）
+  await expect(page.getByTestId('warning-badge')).toHaveText(/等待预告/);
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'waiting');
+
+  // 进行 400ms 后暂停：余量 600 > 预告量 300，预告冻结在“等待预告”
+  await page.clock.runFor(400);
+  await page.getByRole('button', { name: '暂停' }).click();
+  await expect(page.getByTestId('status')).toContainText('已暂停');
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
+  await expect(page.getByTestId('warning-badge')).toHaveText(/预告已冻结 · 等待预告 · 距预告点 300 ms/);
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'waiting');
+
+  // 暂停期间时间流逝不推进预告
+  await page.clock.runFor(10000);
+  await expect(page.getByTestId('current')).toContainText('冻结剩余 600 ms');
+  await expect(page.getByTestId('warning-badge')).toHaveText(/距预告点 300 ms/);
+
+  // 恢复：以冻结余量重建预告边界（新预告点 = 恢复时刻 + 300）
+  await page.getByRole('button', { name: '继续' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'waiting');
+  await expect(page.getByTestId('planned-a')).toHaveText('11000 ms');
+
+  // 推进到重建后的预告点（10400 + 300 = 10700）：a 变即将到期，距截止 300ms，但不结算
+  await page.clock.runFor(300);
+  await expect(page.getByTestId('warning-badge')).toHaveText(/即将到期 · 剩余 300 ms/);
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'due-soon');
+  await expect(page.getByTestId('actual-a')).toHaveText('—');
+
+  // 标签页降频：唯一回调被延迟到相对启动 12500ms 投递。
+  // a 截止 11000（迟到 1500 > 100 => 超限）；b 截止 13000、预告点 12500 恰到达；c 尚未到期
+  await page.clock.fastForward(1800);
+  await expect(page.getByTestId('actual-a')).toHaveText('12500 ms');
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
+  await expect(page.getByTestId('verdict-a')).toHaveText('迟到 1500 ms（超限）');
+  // a 结算后当前项推进到 b：此刻恰在 b 的预告点，呈现即将到期、距截止 500ms
+  await expect(page.getByTestId('current')).toContainText('追光');
+  await expect(page.getByTestId('warning-badge')).toHaveText(/即将到期 · 剩余 500 ms/);
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'due-soon');
+  await expect(page.getByTestId('actual-b')).toHaveText('—');
+
+  // b 在原截止 13000 结算后，当前项推进到旧项 c：c 未配置预告，不显示任何预告提示
+  await page.clock.runFor(500);
+  await expect(page.getByTestId('actual-b')).toHaveText('13000 ms');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
+  await expect(page.getByTestId('current')).toContainText('谢幕');
+  await expect(page.getByTestId('warning-badge')).toHaveCount(0);
+
+  // c 照常到期，演练完成；绝对截止未因预告或延迟漂移
+  await page.clock.runFor(3000);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('planned-c')).toHaveText('16000 ms');
+  await expect(page.getByTestId('actual-c')).toHaveText('16000 ms');
+  await expect(page.getByTestId('kind-c')).toHaveText('到期处理');
+  await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
+  await expect(page.getByTestId('warning-badge')).toHaveCount(0);
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 1 项');
+});
+
+test('一次延迟回调跨过预告点与截止点：当前项直接呈现即将到期，截止不被改写', async ({ page }) => {
+  await importJson(page, [
+    { id: 'a', label: '开场灯', durationMs: 1000, warningLeadMs: 300 },
+    { id: 'b', label: '追光', durationMs: 2000, warningLeadMs: 500 },
+  ]);
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'waiting');
+
+  // 标签页降频到 2700ms：越过 a 的预告点 700 与截止 1000（a 结算），
+  // 并越过 b 的预告点 2500 但未到 b 的截止 3000（b 依据当前绝对时刻直接呈现即将到期）
+  await page.clock.fastForward(2700);
+  await expect(page.getByTestId('actual-a')).toHaveText('2700 ms');
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
+  await expect(page.getByTestId('current')).toContainText('追光');
+  await expect(page.getByTestId('warning-badge')).toHaveText(/即将到期 · 剩余 300 ms/);
+  await expect(page.getByTestId('warning-badge')).toHaveAttribute('data-warning', 'due-soon');
+  await expect(page.getByTestId('actual-b')).toHaveText('—');
+
+  // b 仍按原截止时刻 3000 结算：预告没有顺延或改写截止
+  await page.clock.runFor(300);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('planned-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('actual-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
+});
+
+test('非法 warningLeadMs 整份拒绝并指出条目与字段，当前清单与演练状态保留', async ({ page }) => {
+  await importJson(page, cues);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+  await expect(page.getByTestId('cue-row-a')).toBeVisible();
+
+  const invalidSheets: Array<[string, unknown, string]> = [
+    ['预告为小数', [{ id: 'x', label: '坏项', durationMs: 100, warningLeadMs: 0.5 }], 'warningLeadMs 必须是整数'],
+    ['预告为字符串', [{ id: 'x', label: '坏项', durationMs: 100, warningLeadMs: '100' }], 'warningLeadMs 必须是整数'],
+    ['预告为 null', [{ id: 'x', label: '坏项', durationMs: 100, warningLeadMs: null }], 'warningLeadMs 必须是整数'],
+    ['预告为负数', [{ id: 'x', label: '坏项', durationMs: 100, warningLeadMs: -1 }], 'warningLeadMs 必须在 0'],
+    ['预告超过该项时长', [{ id: 'x', label: '坏项', durationMs: 100, warningLeadMs: 101 }], '0 到该项 durationMs（100）'],
+  ];
+  for (const [, payload, message] of invalidSheets) {
+    await importJson(page, payload);
+    await expect(page.getByRole('alert')).toContainText(message);
+    // 当前有效清单保持不变
+    await expect(page.getByTestId('cue-row-a')).toBeVisible();
+    await expect(page.getByTestId('cue-row-c')).toBeVisible();
+    await expect(page.getByTestId('status')).toContainText('待启动');
+  }
+
+  // 指出具体条目序号与字段
+  await importJson(page, [
+    cues[0],
+    { id: 'bad', label: '预告越界', durationMs: 2000, warningLeadMs: 2001 },
+  ]);
+  await expect(page.getByRole('alert')).toContainText('第 2 项');
+  await expect(page.getByRole('alert')).toContainText('warningLeadMs');
+  await expect(page.getByTestId('cue-row-bad')).toHaveCount(0);
+  await expect(page.getByTestId('status')).toContainText('待启动');
+});
+
+test('旧格式清单没有预告提示且时序与原表现一致', async ({ page }) => {
+  await importJson(page, cues);
+
+  // 待启动：无当前项，不出现预告徽标
+  await expect(page.getByTestId('warning-badge')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByTestId('status')).toContainText('进行中');
+  // 进行中、当前项为旧项：不出现任何预告徽标，提示行与引入预告前一致
+  await expect(page.getByTestId('current')).toHaveText(/当前应执行：开场灯（计划截止 1000 ms）/);
+  await expect(page.getByTestId('warning-badge')).toHaveCount(0);
+
+  // 标签页降频、一次性集中处理的原始路径：计划截止与实际处理时刻均与引入预告前一致
+  await page.clock.fastForward(7500);
+  await expect(page.getByTestId('status')).toContainText('已完成');
+  await expect(page.getByTestId('planned-a')).toHaveText('1000 ms');
+  await expect(page.getByTestId('planned-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('planned-c')).toHaveText('6000 ms');
+  await expect(page.getByTestId('actual-a')).toHaveText('7500 ms');
+  await expect(page.getByTestId('actual-b')).toHaveText('7500 ms');
+  await expect(page.getByTestId('actual-c')).toHaveText('7500 ms');
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-c')).toHaveText('到期处理');
+  await expect(page.getByTestId('warning-badge')).toHaveCount(0);
+  // 旧格式迟到量照记但不判级，汇总始终 0
+  await expect(page.getByTestId('verdict-a')).toContainText('迟到 6500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-b')).toContainText('迟到 4500 ms（未设标准）');
+  await expect(page.getByTestId('verdict-c')).toContainText('迟到 1500 ms（未设标准）');
+  await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
+});
+
 test('含非法编码字节的清单整份拒绝并提示编码异常', async ({ page }) => {
   await importJson(page, cues);
   await expect(page.getByTestId('status')).toContainText('待启动');

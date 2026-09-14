@@ -9,6 +9,7 @@ import type {
   EngineStatus,
   LatenessVerdict,
   Snapshot,
+  WarningState,
 } from './types';
 
 export class RehearsalError extends Error {
@@ -28,6 +29,10 @@ export class RehearsalError extends Error {
  *   再冻结第一个尚未到期项的剩余毫秒数；恢复时以该余量建立新的绝对截止时刻。
  * - 定时回调若因标签页降频而延迟并跨过多项，handleTimer 会按各自截止时刻
  *   依次记入轨迹，并把“当前应执行项”直接推进到第一个尚未到期的项。
+ * - 到期预告：配置了 warningLeadMs 的当前项在「计划截止 − 预告时长」处被标为
+ *   “即将到期”，此前标为“等待预告”；预告点与截止点都是绝对时刻，延迟回调
+ *   跨过预告点或截止点时只按当前绝对时刻推进状态，不改写任何后续截止时刻。
+ *   暂停冻结预告进度，恢复后以冻结余量重建预告边界；未配置该项的旧清单无预告。
  * - 人工跳过先按当前单调时刻结算所有已到期项（记为“到期处理”），再把首个
  *   尚未到期项记为“人工跳过”，随后沿原绝对时间线等待下一项：不重排清单、
  *   不延长总计划；跳过项保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总。
@@ -70,7 +75,10 @@ export class RehearsalEngine {
     this.status = 'ready';
   }
 
-  /** 启动演练，返回距首个截止时刻的毫秒数。 */
+  /**
+   * 启动演练，返回距首个定时事件的毫秒数：首项配置了 warningLeadMs 时为
+   * 距预告点的时长，否则为距首项截止的时长。
+   */
   start(): number {
     if (this.status === 'idle') {
       throw new RehearsalError('尚未导入提示清单，无法启动演练');
@@ -89,7 +97,7 @@ export class RehearsalEngine {
     this.log = [];
     this.startedAtMs = this.clock.now();
     this.deadlineMs = this.startedAtMs + this.items[0].durationMs;
-    return this.items[0].durationMs;
+    return this.delayUntilNextEvent(this.startedAtMs);
   }
 
   /**
@@ -112,21 +120,25 @@ export class RehearsalEngine {
     this.status = 'paused';
   }
 
-  /** 恢复：以冻结的余量建立新的绝对截止时刻，返回距截止的毫秒数。 */
+  /**
+   * 恢复：以冻结的余量建立新的绝对截止时刻，预告点随之按同一边界重建。
+   * 返回距下一个事件（预告点或截止点，取较早者）的毫秒数。
+   */
   resume(): number {
     if (this.status !== 'paused') {
       throw new RehearsalError('当前未处于暂停状态，无法继续');
     }
-    this.deadlineMs = this.clock.now() + this.remainingMs;
+    const now = this.clock.now();
+    this.deadlineMs = now + this.remainingMs;
     this.status = 'running';
-    return this.remainingMs;
+    return this.delayUntilNextEvent(now);
   }
 
   /**
    * 定时回调。回调可能因标签页降频而迟到并跨过多项：
    * 逐项按各自截止时刻记入轨迹（实际处理时刻均为当前时刻），
-   * 然后把当前项推进到第一个尚未到期的项，返回其剩余毫秒；
-   * 全部到期则进入完成状态并返回 null。
+   * 然后把当前项推进到第一个尚未到期的项，返回距其下一个定时事件
+   * （等待预告时为预告点，否则为截止点）的毫秒数；全部到期则完成并返回 null。
    */
   handleTimer(): number | null {
     if (this.status !== 'running') {
@@ -138,7 +150,7 @@ export class RehearsalEngine {
       this.status = 'completed';
       return null;
     }
-    return this.deadlineMs - now;
+    return this.delayUntilNextEvent(now);
   }
 
   /**
@@ -146,7 +158,8 @@ export class RehearsalEngine {
    * （与定时回调相同的“到期处理”），再把首个尚未到期项记为“人工跳过”：
    * 保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总。
    * 随后沿原绝对时间线等待下一项（不重排清单、不延长总计划），
-   * 返回距下一项截止的毫秒数；跳过的是末项（或结算后全部到期）则完成并返回 null。
+   * 返回距下一项定时事件（其预告点或截止点）的毫秒数；
+   * 跳过的是末项（或结算后全部到期）则完成并返回 null。
    */
   skip(): number | null {
     if (this.status === 'idle') {
@@ -184,7 +197,7 @@ export class RehearsalEngine {
       return null;
     }
     this.deadlineMs += this.items[this.index].durationMs;
-    return this.deadlineMs - now;
+    return this.delayUntilNextEvent(now);
   }
 
   /**
@@ -221,6 +234,41 @@ export class RehearsalEngine {
     }
   }
 
+  /**
+   * 距当前项下一个定时事件的毫秒数，用于安排 setTimeout：
+   * - 尚在预告点之前（等待预告）：下一个事件是预告点 = 截止点 − warningLeadMs；
+   * - 已到/越过预告点（即将到期）：下一个事件就是截止点。
+   * 未配置 warningLeadMs 的旧项只有截止点。预告点只作状态标记，回调在预告点
+   * 被延迟跨过（now 已越过预告点）时不再补发预告事件，直接等到截止点；
+   * 任何情况下后续截止时刻都不被改写。
+   */
+  private delayUntilNextEvent(now: number): number {
+    const lead = this.items[this.index]?.warningLeadMs;
+    if (lead === undefined) {
+      return Math.max(0, this.deadlineMs - now);
+    }
+    const remaining = this.deadlineMs - now;
+    // 余量已不大于预告提前量：预告点已到或被延迟回调跨过，等待截止点
+    return remaining <= lead ? Math.max(0, remaining) : remaining - lead;
+  }
+
+  /**
+   * 当前项的预告状态：配置了 warningLeadMs 时，余量不大于预告提前量即为
+   * “即将到期”（已到预告点），否则为“等待预告”；未配置则为 null。
+   * 暂停时以冻结余量判定（预告进度一并冻结）；进行中若截止点已过但结算回调
+   * 尚未到达，则不展示预告——“即将到期”只在 [预告点, 截止点) 区间成立。
+   */
+  private warningForCurrent(now: number, remainingMs: number): WarningState | null {
+    const lead = this.items[this.index]?.warningLeadMs;
+    if (lead === undefined) {
+      return null;
+    }
+    if (this.status === 'running' && this.deadlineMs - now <= 0) {
+      return null;
+    }
+    return remainingMs <= lead ? 'due-soon' : 'waiting';
+  }
+
   getSnapshot(): Snapshot {
     const now = this.clock.now();
     const rows: CueRow[] = [];
@@ -255,6 +303,7 @@ export class RehearsalEngine {
         maxLatenessMs,
         channelStart: item.channelStart ?? null,
         channelCount: item.channelCount ?? null,
+        warningLeadMs: item.warningLeadMs ?? null,
         channelCheck: this.channelChecks[i],
         kind,
         plannedAtMs,
@@ -264,16 +313,22 @@ export class RehearsalEngine {
       });
     }
     const isActive = this.status === 'running' || this.status === 'paused';
+    const currentRemainingMs =
+      this.status === 'running'
+        ? Math.max(0, this.deadlineMs - now)
+        : this.status === 'paused'
+          ? this.remainingMs
+          : null;
+    const currentWarning =
+      isActive && this.index < this.items.length && currentRemainingMs !== null
+        ? this.warningForCurrent(now, currentRemainingMs)
+        : null;
     return {
       status: this.status,
       rows,
       currentIndex: isActive ? this.index : null,
-      currentRemainingMs:
-        this.status === 'running'
-          ? Math.max(0, this.deadlineMs - now)
-          : this.status === 'paused'
-            ? this.remainingMs
-            : null,
+      currentRemainingMs,
+      currentWarning,
       totalDurationMs: this.items.reduce((sum, item) => sum + item.durationMs, 0),
       finishedAtMs:
         this.status === 'completed' && this.log.length > 0

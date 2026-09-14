@@ -169,6 +169,90 @@ describe('parseCueSheet channelStart/channelCount 通道配接', () => {
   });
 });
 
+describe('parseCueSheet warningLeadMs 到期预告', () => {
+  it('省略时不设置该字段（旧清单保持原样）', () => {
+    const items = parseCueSheet(JSON.stringify(valid));
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.warningLeadMs === undefined)).toBe(true);
+  });
+
+  it('接受边界：0 与恰等于 durationMs', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'zero', label: '零预告', durationMs: 100, warningLeadMs: 0 },
+        { id: 'full', label: '全程预告', durationMs: 1000, warningLeadMs: 1000 },
+      ]),
+    );
+    expect(items.map((item) => item.warningLeadMs)).toEqual([0, 1000]);
+  });
+
+  it('接受 0 ～ durationMs 之间的整数', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'a', label: 'x', durationMs: 1000, warningLeadMs: 1 },
+        { id: 'b', label: 'y', durationMs: 1000, warningLeadMs: 999 },
+      ]),
+    );
+    expect(items.map((item) => item.warningLeadMs)).toEqual([1, 999]);
+  });
+
+  it('与其他可选字段及未配置旧项可在同一清单内混用', () => {
+    const items = parseCueSheet(
+      JSON.stringify([
+        { id: 'old', label: '旧项', durationMs: 100 },
+        { id: 'late', label: '阈值项', durationMs: 100, maxLatenessMs: 50 },
+        { id: 'warn', label: '预告项', durationMs: 1000, warningLeadMs: 200 },
+        {
+          id: 'all',
+          label: '全字段',
+          durationMs: 1000,
+          maxLatenessMs: 100,
+          channelStart: 1,
+          channelCount: 4,
+          warningLeadMs: 300,
+        },
+      ]),
+    );
+    expect(items[0].warningLeadMs).toBeUndefined();
+    expect(items[1].warningLeadMs).toBeUndefined();
+    expect(items[2].warningLeadMs).toBe(200);
+    expect(items[3]).toMatchObject({ warningLeadMs: 300, channelStart: 1, channelCount: 4 });
+  });
+
+  const invalidCases: Array<[string, unknown, string]> = [
+    ['warningLeadMs 为小数', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: 0.5 }], 'warningLeadMs 必须是整数'],
+    ['warningLeadMs 为字符串', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: '100' }], 'warningLeadMs 必须是整数'],
+    ['warningLeadMs 为布尔', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: true }], 'warningLeadMs 必须是整数'],
+    ['warningLeadMs 为 null', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: null }], 'warningLeadMs 必须是整数'],
+    ['warningLeadMs 为负数', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: -1 }], 'warningLeadMs 必须在 0'],
+    ['warningLeadMs 超过 durationMs（多 1）', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: 101 }], '0 到该项 durationMs（100）'],
+    ['warningLeadMs 远超 durationMs', [{ id: 'a', label: 'x', durationMs: 100, warningLeadMs: 600000 }], '0 到该项 durationMs（100）'],
+    ['warningLeadMs 超出但短于 maxLatenessMs 上限', [{ id: 'a', label: 'x', durationMs: 1000, maxLatenessMs: 2000, warningLeadMs: 1500 }], '0 到该项 durationMs（1000）'],
+  ];
+
+  it.each(invalidCases)('%s', (_name, payload, message) => {
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(CueSheetError);
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(message);
+  });
+
+  it('非法 warningLeadMs 指出具体条目序号与字段', () => {
+    const payload = [
+      valid[0],
+      { id: 'b', label: 'y', durationMs: 2000, warningLeadMs: 2001 },
+    ];
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('第 2 项');
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow('warningLeadMs');
+  });
+
+  it('任一项 warningLeadMs 非法即整份拒绝，不返回部分结果', () => {
+    const payload = [
+      { id: 'ok', label: '好项', durationMs: 100, warningLeadMs: 50 },
+      { id: 'bad', label: '坏项', durationMs: 100, warningLeadMs: 101 },
+    ];
+    expect(() => parseCueSheet(JSON.stringify(payload))).toThrow(CueSheetError);
+  });
+});
+
 describe('parseCueSheet 非法输入整份拒绝', () => {
   const cases: Array<[string, unknown, string]> = [
     ['非 JSON 文本', 'not json{', '有效的 JSON'],

@@ -14,6 +14,7 @@ const ALLOWED_KEYS = new Set([
   'maxLatenessMs',
   'channelStart',
   'channelCount',
+  'warningLeadMs',
 ]);
 
 export class CueSheetError extends Error {
@@ -66,11 +67,11 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
   for (const key of Object.keys(record)) {
     if (!ALLOWED_KEYS.has(key)) {
       throw new CueSheetError(
-        `${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs、maxLatenessMs、channelStart、channelCount`,
+        `${where}包含不允许的字段 "${key}"，仅允许 id、label、durationMs、maxLatenessMs、channelStart、channelCount、warningLeadMs`,
       );
     }
   }
-  const { id, label, durationMs, maxLatenessMs, channelStart, channelCount } = record;
+  const { id, label, durationMs, maxLatenessMs, channelStart, channelCount, warningLeadMs } = record;
 
   if (typeof id !== 'string' && typeof id !== 'number') {
     throw new CueSheetError(`${where}的 id 必须是字符串或数字`);
@@ -114,6 +115,21 @@ function validateItem(raw: unknown, index: number, seenIds: Set<string>): CueIte
       );
     }
     item.maxLatenessMs = maxLatenessMs;
+  }
+
+  // warningLeadMs 为可选字段：省略时不显示预告、计时与旧清单完全一致；
+  // 出现时必须是 0 ～ 该项 durationMs 的整数（此时 durationMs 必已合法）。
+  // 任一非法值整份拒绝（exactOptionalPropertyTypes 下显式赋值）。
+  if (warningLeadMs !== undefined) {
+    if (typeof warningLeadMs !== 'number' || !Number.isInteger(warningLeadMs)) {
+      throw new CueSheetError(`${where}的 warningLeadMs 必须是整数`);
+    }
+    if (warningLeadMs < 0 || warningLeadMs > durationMs) {
+      throw new CueSheetError(
+        `${where}的 warningLeadMs 必须在 0 到该项 durationMs（${durationMs}）之间`,
+      );
+    }
+    item.warningLeadMs = warningLeadMs;
   }
 
   // channelStart 与 channelCount 为成对的可选字段：只能同时出现或同时省略；

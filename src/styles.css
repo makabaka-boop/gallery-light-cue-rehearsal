@@ -78,6 +78,25 @@ button:hover {
   color: #c7d3e2;
 }
 
+.warning-badge {
+  margin-left: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.warning-waiting {
+  border: 1px solid #3a4656;
+  color: #9fb0c3;
+}
+
+.warning-due-soon {
+  border: 1px solid #8a6d2f;
+  background: #33270f;
+  color: #f0c36d;
+}
+
 .done {
   margin: 8px 0;
   color: #6fd38c;

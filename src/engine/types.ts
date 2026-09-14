@@ -8,6 +8,8 @@ export interface CueItem {
   channelStart?: number;
   /** 可选的占用通道数（1 ～ 512 的整数，且起始 + 数量 - 1 不得超过 512）；必须与 channelStart 同时出现 */
   channelCount?: number;
+  /** 可选的到期预告提前量（0 ～ durationMs 的整数）；省略则不显示预告 */
+  warningLeadMs?: number;
 }
 
 /** 通道占用检查结论：可用（无重叠）、冲突（与他项通道区间重叠）、未配接（未配置通道的旧项） */
@@ -32,6 +34,13 @@ export interface ChannelCheck {
 
 /** 迟到判定：准时（迟到量不超过该项阈值）或超限（超过阈值） */
 export type LatenessVerdict = 'on-time' | 'over-limit';
+
+/**
+ * 当前提示的预告状态（只在进行中/已暂停且当前项配置了 warningLeadMs 时有值）：
+ * waiting（等待预告，尚在预告点之前）或 due-soon（即将到期，已过预告点未到截止）。
+ * 未配置 warningLeadMs 的旧项恒为 null。
+ */
+export type WarningState = 'waiting' | 'due-soon';
 
 /** 轨迹记录类型：到期处理（按截止时刻结算）或人工跳过（技术员主动跳过当前提示） */
 export type CueLogKind = 'settled' | 'skipped';
@@ -66,6 +75,8 @@ export interface CueRow {
   channelStart: number | null;
   /** 该项配置的占用通道数；未配接为 null */
   channelCount: number | null;
+  /** 该项配置的到期预告提前量；未配置为 null */
+  warningLeadMs: number | null;
   /** 通道占用检查结果（载入时按闭区间比较得出，演练期间不变） */
   channelCheck: ChannelCheck;
   /** 轨迹类型（到期处理 / 人工跳过）；未处理为 null */
@@ -87,6 +98,12 @@ export interface Snapshot {
   currentIndex: number | null;
   /** 当前项剩余毫秒（进行中为实时推算，已暂停为冻结余量） */
   currentRemainingMs: number | null;
+  /**
+   * 当前项预告状态：等待预告 / 即将到期。
+   * 仅进行中或已暂停、且当前项配置了 warningLeadMs 时有值；
+   * 旧格式当前项（未配置预告）或无当前项时为 null。
+   */
+  currentWarning: WarningState | null;
   /** 全部提示的时长合计 */
   totalDurationMs: number;
   /** 最后一项实际处理时刻（仅已完成时有值） */
