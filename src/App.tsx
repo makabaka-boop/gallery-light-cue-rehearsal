@@ -18,6 +18,17 @@ function formatMs(value: number | null): string {
   return value === null ? '—' : `${value} ms`;
 }
 
+/** 处理类型文本：到期处理 / 人工跳过；未处理显示占位 */
+function kindText(row: { kind: 'settled' | 'skipped' | null }): string {
+  if (row.kind === 'settled') {
+    return '到期处理';
+  }
+  if (row.kind === 'skipped') {
+    return '人工跳过';
+  }
+  return '—';
+}
+
 function verdictCell(row: {
   kind: 'settled' | 'skipped' | null;
   maxLatenessMs: number | null;
@@ -26,8 +37,8 @@ function verdictCell(row: {
   latenessVerdict: 'on-time' | 'over-limit' | null;
 }): { text: string; className: string } {
   if (row.kind === 'skipped') {
-    // 人工跳过：保留原计划截止与操作时刻，但不计算迟到量、不参与超限汇总
-    return { text: '人工跳过', className: 'verdict-skipped' };
+    // 人工跳过：保留原计划截止与操作时刻，但不计算迟到量、不参与迟到判定与超限汇总
+    return { text: '人工跳过（不计算迟到，不参与判定）', className: 'verdict-skipped' };
   }
   if (row.actualAtMs === null || row.latenessMs === null) {
     // 尚未处理：未配置阈值的旧格式项始终显示“未设标准”
@@ -203,7 +214,10 @@ export default function App() {
       {status === 'completed' && lastRow && (
         <p className="done" data-testid="done">
           已完成：计划总时长 {snapshot.totalDurationMs} ms；最后一项计划截止{' '}
-          {formatMs(lastRow.plannedAtMs)}，实际处理 {formatMs(snapshot.finishedAtMs)}
+          {formatMs(lastRow.plannedAtMs)}，
+          {lastRow.kind === 'skipped'
+            ? `人工跳过时刻 ${formatMs(snapshot.finishedAtMs)}`
+            : `实际处理 ${formatMs(snapshot.finishedAtMs)}`}
           （均相对启动时刻）
         </p>
       )}
@@ -239,6 +253,7 @@ export default function App() {
               <th scope="col">通道检查</th>
               <th scope="col">计划截止</th>
               <th scope="col">实际处理</th>
+              <th scope="col">处理类型</th>
               <th scope="col">迟到判定</th>
             </tr>
           </thead>
@@ -265,6 +280,9 @@ export default function App() {
                   </td>
                   <td data-testid={`planned-${row.id}`}>{formatMs(row.plannedAtMs)}</td>
                   <td data-testid={`actual-${row.id}`}>{formatMs(row.actualAtMs)}</td>
+                  <td data-testid={`kind-${row.id}`} data-kind={row.kind ?? 'none'}>
+                    {kindText(row)}
+                  </td>
                   <td
                     className={verdict.className}
                     data-testid={`verdict-${row.id}`}

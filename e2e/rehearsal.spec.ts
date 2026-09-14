@@ -107,18 +107,23 @@ test('暂停冻结余量、恢复重建截止，延迟回调集中处理且不�
   await page.clock.fastForward(4100);
 
   // a、b 按各自截止时刻依次记入轨迹，实际处理时刻同为 14500；当前应执行项直接落到 c
+  // 处理类型列直接标出这两项属于到期处理，未处理的 c 仍为占位符
   await expect(page.getByTestId('planned-a')).toHaveText('11000 ms');
   await expect(page.getByTestId('actual-a')).toHaveText('14500 ms');
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
   await expect(page.getByTestId('planned-b')).toHaveText('13000 ms');
   await expect(page.getByTestId('actual-b')).toHaveText('14500 ms');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
   await expect(page.getByTestId('current')).toContainText('谢幕');
   await expect(page.getByTestId('planned-c')).toHaveText('16000 ms');
   await expect(page.getByTestId('actual-c')).toHaveText('—');
+  await expect(page.getByTestId('kind-c')).toHaveText('—');
 
   // c 仍在原计划截止时刻到期：长延迟虽造成集中处理，却没有延长整段演练
   await page.clock.runFor(1500);
   await expect(page.getByTestId('status')).toContainText('已完成');
   await expect(page.getByTestId('actual-c')).toHaveText('16000 ms');
+  await expect(page.getByTestId('kind-c')).toHaveText('到期处理');
   await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
   await expect(page.getByTestId('done')).toContainText('计划截止 16000 ms');
   await expect(page.getByTestId('done')).toContainText('实际处理 16000 ms');
@@ -262,16 +267,21 @@ test('演练中人工跳过一项：当前提示推进、轨迹类型与超限�
   await expect(page.getByTestId('current')).toContainText('追光');
   await expect(page.getByTestId('planned-a')).toHaveText('1000 ms');
   await expect(page.getByTestId('actual-a')).toHaveText('400 ms');
-  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+  // 处理类型列直接标出人工跳过；判定格说明该项不计算迟到、不参与判定
+  await expect(page.getByTestId('kind-a')).toHaveText('人工跳过');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过（不计算迟到，不参与判定）');
   await expect(page.getByTestId('verdict-a')).toHaveAttribute('data-kind', 'skipped');
+  // 未处理项的处理类型为占位符
+  await expect(page.getByTestId('kind-b')).toHaveText('—');
   await expect(page.getByTestId('planned-b')).toHaveText('3000 ms');
   await expect(page.getByTestId('planned-c')).toHaveText('6000 ms');
   // 跳过项不计算迟到量、不参与超限汇总
   await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
 
-  // b 仍在原计划截止 3000ms 到期（跳过没有顺延后续项）
+  // b 仍在原计划截止 3000ms 到期（跳过没有顺延后续项），处理类型为到期处理
   await page.clock.runFor(2600);
   await expect(page.getByTestId('actual-b')).toHaveText('3000 ms');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
   await expect(page.getByTestId('verdict-b')).toHaveText('迟到 0 ms（未设标准）');
   await expect(page.getByTestId('verdict-b')).toHaveAttribute('data-kind', 'settled');
   await expect(page.getByTestId('current')).toContainText('谢幕');
@@ -282,17 +292,18 @@ test('演练中人工跳过一项：当前提示推进、轨迹类型与超限�
   await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
   await expect(page.getByTestId('done')).toContainText('计划截止 6000 ms');
   await expect(page.getByTestId('done')).toContainText('实际处理 6000 ms');
-  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+  await expect(page.getByTestId('kind-c')).toHaveText('到期处理');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过（不计算迟到，不参与判定）');
   await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
 
   // 完成后点击跳过：就地说明当前状态，快照不变
   await page.getByRole('button', { name: '跳过当前提示' }).click();
   await expect(page.getByRole('alert')).toContainText('已完成');
   await expect(page.getByTestId('status')).toContainText('已完成');
-  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过');
+  await expect(page.getByTestId('verdict-a')).toHaveText('人工跳过（不计算迟到，不参与判定）');
 });
 
-test('跳过末项直接完成，计划截止保持原值', async ({ page }) => {
+test('跳过末项直接完成，计划截止保持原值，完成摘要标注人工跳过时刻', async ({ page }) => {
   await importJson(page, cues);
   await page.getByRole('button', { name: '开始' }).click();
 
@@ -305,13 +316,18 @@ test('跳过末项直接完成，计划截止保持原值', async ({ page }) => 
   await page.getByRole('button', { name: '跳过当前提示' }).click();
 
   await expect(page.getByTestId('status')).toContainText('已完成');
-  await expect(page.getByTestId('verdict-c')).toHaveText('人工跳过');
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-c')).toHaveText('人工跳过');
+  await expect(page.getByTestId('verdict-c')).toHaveText('人工跳过（不计算迟到，不参与判定）');
   await expect(page.getByTestId('verdict-c')).toHaveAttribute('data-kind', 'skipped');
   await expect(page.getByTestId('planned-c')).toHaveText('6000 ms');
   await expect(page.getByTestId('actual-c')).toHaveText('4500 ms');
   await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
   await expect(page.getByTestId('done')).toContainText('计划截止 6000 ms');
-  await expect(page.getByTestId('done')).toContainText('实际处理 4500 ms');
+  // 末项为人工跳过：完成摘要把提前点击的时刻明确标注为人工跳过时刻，而非实际处理
+  await expect(page.getByTestId('done')).toContainText('人工跳过时刻 4500 ms');
+  await expect(page.getByTestId('done')).not.toContainText('实际处理');
   await expect(page.getByTestId('lateness-summary')).toContainText('超限 0 项');
 });
 
@@ -349,6 +365,10 @@ test('延迟回调一次跨过全部项时集中处理并完成', async ({ page 
   await expect(page.getByTestId('actual-a')).toHaveText('7500 ms');
   await expect(page.getByTestId('actual-b')).toHaveText('7500 ms');
   await expect(page.getByTestId('actual-c')).toHaveText('7500 ms');
+  // 集中处理的各项在处理类型列均标为到期处理
+  await expect(page.getByTestId('kind-a')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-b')).toHaveText('到期处理');
+  await expect(page.getByTestId('kind-c')).toHaveText('到期处理');
   await expect(page.getByTestId('done')).toContainText('计划总时长 6000 ms');
   // 旧格式：各项迟到量照记但无判定，汇总不统计超限
   await expect(page.getByTestId('verdict-a')).toContainText('迟到 6500 ms（未设标准）');
